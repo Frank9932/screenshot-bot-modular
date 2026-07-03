@@ -1,6 +1,6 @@
 ---
 - name: Check Screenshot Bot Modular webhook status
-  hosts: windows_wechat_bot
+  hosts: screenshot_bot_modular
   gather_facts: false
 
   tasks:

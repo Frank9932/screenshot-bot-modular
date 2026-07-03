@@ -1,6 +1,6 @@
 all:
   children:
-    windows_wechat_bot:
+    screenshot_bot_modular:
       hosts:
         win11-golden-test-01:
           ansible_host: 192.168.6.119

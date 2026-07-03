@@ -1,6 +1,6 @@
 ---
 - name: Deploy Screenshot Bot Modular to Windows 11
-  hosts: windows_wechat_bot
+  hosts: screenshot_bot_modular
   gather_facts: false
 
   vars_files:

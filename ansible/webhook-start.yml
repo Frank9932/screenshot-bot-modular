@@ -1,6 +1,6 @@
 ---
 - name: Start Screenshot Bot Modular webhook receiver
-  hosts: windows_wechat_bot
+  hosts: screenshot_bot_modular
   gather_facts: false
 
   vars:

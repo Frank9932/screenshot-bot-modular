@@ -1,6 +1,6 @@
 ---
 - name: Read Screenshot Bot Modular webhook logs
-  hosts: windows_wechat_bot
+  hosts: screenshot_bot_modular
   gather_facts: false
 
   vars:
