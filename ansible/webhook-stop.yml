@@ -1,0 +1,22 @@
+---
+- name: Stop Screenshot Bot Modular webhook receiver
+  hosts: windows_wechat_bot
+  gather_facts: false
+
+  vars:
+    webhook_task_name: ScreenshotBotModular-Webhook
+
+  tasks:
+    - name: Stop deployed webhook
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = "Continue"
+        schtasks.exe /End /TN "{{ webhook_task_name }}" 2>$null | Out-Null
+        schtasks.exe /Delete /TN "{{ webhook_task_name }}" /F 2>$null | Out-Null
+        Set-Location -LiteralPath "{{ bot_install_dir }}"
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Stop-WebhookBackground.ps1"
+      register: webhook_stop
+      changed_when: true
+
+    - name: Print webhook stop result
+      ansible.builtin.debug:
+        var: webhook_stop.stdout

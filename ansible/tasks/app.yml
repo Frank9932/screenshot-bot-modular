@@ -1,0 +1,17 @@
+---
+- name: Copy application files
+  ansible.windows.win_copy:
+    src: "{{ playbook_dir }}/../{{ item }}"
+    dest: "{{ bot_install_dir }}\\{{ item }}"
+  loop: "{{ app_files }}"
+
+- name: Copy application directories
+  ansible.windows.win_copy:
+    src: "{{ playbook_dir }}/../{{ item }}"
+    dest: "{{ bot_install_dir }}\\"
+  loop: "{{ app_dirs }}"
+
+- name: Render bot config
+  ansible.windows.win_template:
+    src: templates/config.json.j2
+    dest: "{{ bot_install_dir }}\\config.json"

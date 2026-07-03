@@ -1,0 +1,143 @@
+---
+- name: Check Python command
+  ansible.windows.win_shell: |
+    $candidates = @(
+      "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+      "$env:ProgramFiles\Python312\python.exe",
+      "${env:ProgramFiles(x86)}\Python312\python.exe"
+    )
+    foreach ($candidate in $candidates) {
+      if (Test-Path -LiteralPath $candidate) {
+        $candidate
+        exit 0
+      }
+    }
+
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and $cmd.Source -notlike "*\Microsoft\WindowsApps\python.exe") {
+      try {
+        & $cmd.Source --version *> $null
+        if ($LASTEXITCODE -eq 0) {
+          $cmd.Source
+          exit 0
+        }
+      } catch {
+      }
+    }
+
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $py) {
+      $py.Source
+      exit 0
+    }
+    exit 1
+  register: python_check
+  changed_when: false
+  failed_when: false
+
+- name: Check winget when Python is missing
+  ansible.windows.win_shell: |
+    $cmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { exit 1 }
+    $cmd.Source
+  register: winget_check
+  changed_when: false
+  failed_when: false
+  when:
+    - bot_install_python_effective
+    - python_check.rc != 0
+
+- name: Install Python with winget
+  ansible.windows.win_shell: |
+    winget install --id {{ python_winget_id }} --exact --source winget --accept-package-agreements --accept-source-agreements
+  when:
+    - bot_install_python_effective
+    - python_check.rc != 0
+    - winget_check.rc == 0
+
+- name: Download Python installer fallback
+  ansible.windows.win_get_url:
+    url: "{{ python_installer_url }}"
+    dest: "{{ bot_install_dir }}\\python-installer.exe"
+  when:
+    - bot_install_python_effective
+    - python_check.rc != 0
+    - winget_check.rc != 0
+
+- name: Install Python from fallback installer
+  ansible.windows.win_package:
+    path: "{{ bot_install_dir }}\\python-installer.exe"
+    arguments: /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
+    state: present
+  when:
+    - bot_install_python_effective
+    - python_check.rc != 0
+    - winget_check.rc != 0
+
+- name: Create Python virtual environment
+  ansible.windows.win_shell: |
+    if (!(Test-Path -LiteralPath "{{ bot_install_dir }}\.venv\Scripts\python.exe")) {
+      $pythonPath = ""
+      $candidates = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:ProgramFiles\Python312\python.exe",
+        "${env:ProgramFiles(x86)}\Python312\python.exe"
+      )
+      foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+          $pythonPath = $candidate
+          break
+        }
+      }
+
+      $python = Get-Command python -ErrorAction SilentlyContinue
+      if ([string]::IsNullOrWhiteSpace($pythonPath) -and $null -ne $python -and $python.Source -notlike "*\Microsoft\WindowsApps\python.exe") {
+        $pythonPath = $python.Source
+      }
+
+      if (![string]::IsNullOrWhiteSpace($pythonPath)) {
+        & $pythonPath -m venv "{{ bot_install_dir }}\.venv"
+      } else {
+        $py = Get-Command py -ErrorAction SilentlyContinue
+        if ($null -eq $py) { throw "Python launcher was not found after installation." }
+        & $py.Source -3 -m venv "{{ bot_install_dir }}\.venv"
+      }
+      Write-Output "CREATED"
+    } else {
+      Write-Output "EXISTS"
+    }
+  args:
+    chdir: "{{ bot_install_dir }}"
+  register: venv_create
+  changed_when: "'CREATED' in venv_create.stdout"
+
+- name: Install Python dependencies
+  ansible.windows.win_shell: |
+    & "{{ bot_install_dir }}\.venv\Scripts\python.exe" -m pip install --upgrade pip
+    & "{{ bot_install_dir }}\.venv\Scripts\python.exe" -m pip install -r "{{ bot_install_dir }}\requirements.txt"
+  args:
+    chdir: "{{ bot_install_dir }}"
+  register: pip_install
+  changed_when: >
+    'Successfully installed' in pip_install.stdout or
+    'Successfully uninstalled' in pip_install.stdout or
+    'Installing collected packages' in pip_install.stdout
+
+- name: Build ScreenshotTool.exe
+  ansible.windows.win_shell: |
+    $source = "{{ bot_install_dir }}\ScreenshotTool.cs"
+    $output = "{{ bot_install_dir }}\ScreenshotTool.exe"
+    $needsBuild = !(Test-Path -LiteralPath $output)
+    if (!$needsBuild) {
+      $needsBuild = (Get-Item -LiteralPath $source).LastWriteTimeUtc -gt (Get-Item -LiteralPath $output).LastWriteTimeUtc
+    }
+    if ($needsBuild) {
+      powershell.exe -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\build-screenshot-tool.ps1"
+      Write-Output "BUILT"
+    } else {
+      Write-Output "CURRENT"
+    }
+  args:
+    chdir: "{{ bot_install_dir }}"
+  register: screenshot_tool_build
+  changed_when: "'BUILT' in screenshot_tool_build.stdout"

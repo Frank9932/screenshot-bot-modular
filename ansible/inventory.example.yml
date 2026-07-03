@@ -1,0 +1,13 @@
+all:
+  children:
+    windows_wechat_bot:
+      hosts:
+        win11-golden-test-01:
+          ansible_host: 192.168.6.119
+          ansible_port: 5985
+          ansible_user: deploy
+          ansible_password: "{{ vault_windows_admin_password }}"
+          ansible_connection: winrm
+          ansible_winrm_scheme: http
+          ansible_winrm_transport: ntlm
+          ansible_winrm_server_cert_validation: ignore

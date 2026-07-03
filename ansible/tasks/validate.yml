@@ -1,0 +1,16 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - bot_install_dir is defined
+      - bot_install_dir | length > 0
+      - bot_config is defined
+      - bot_config.wechat_official_webhook is defined
+      - bot_config.wechat_official_webhook.port is defined
+    fail_msg: "Required deployment variables are missing. Check ansible/group_vars/screenshot_bot_modular.yml."
+
+- name: Normalize optional deployment defaults
+  ansible.builtin.set_fact:
+    bot_install_python_effective: "{{ bot_install_python | default(true) | bool }}"
+    create_startup_task_effective: "{{ create_startup_task | default(false) | bool }}"
+  changed_when: false

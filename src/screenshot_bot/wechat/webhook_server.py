@@ -1,0 +1,120 @@
+import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib import parse
+
+from screenshot_bot.runtime.clock import utc_now_iso
+from screenshot_bot.runtime.dedupe import MessageDedupe
+from screenshot_bot.runtime.jsonl import JsonlLogger
+from screenshot_bot.wechat.signature import verify_wechat_signature
+from screenshot_bot.wechat.xml_message import message_dedupe_key, parse_xml_message
+
+
+class WeChatWebhookServer(ThreadingHTTPServer):
+    def __init__(self, address, webhook_path, token, message_processor, ready_payload=None, log_path=None, dedupe_ttl_seconds=600):
+        super().__init__(address, WeChatWebhookHandler)
+        self.webhook_path = webhook_path
+        self.token = token
+        self.logger = JsonlLogger(log_path)
+        self.dedupe = MessageDedupe(dedupe_ttl_seconds)
+        self.message_processor = message_processor
+        self.ready_payload = {
+            "ok": True,
+            "host": address[0],
+            "port": address[1],
+            "path": webhook_path,
+            "dedupe_ttl_seconds": self.dedupe.ttl_seconds,
+            "time": utc_now_iso(),
+            **(ready_payload or {}),
+        }
+
+
+class WeChatWebhookHandler(BaseHTTPRequestHandler):
+    server_version = "WeChatOfficialWebhook/2.0"
+
+    def log_message(self, fmt, *args):
+        return
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            self._json(200, {"ok": True, "time": utc_now_iso(), "webhook_path": self.server.webhook_path})
+            return
+        if path != self.server.webhook_path:
+            self._json(404, {"ok": False, "error": "unknown path"})
+            return
+        query = parse.parse_qs(parse.urlsplit(self.path).query)
+        if not verify_wechat_signature(self.server.token, query):
+            self._text(403, "invalid signature")
+            return
+        self._text(200, query.get("echostr", [""])[0])
+
+    def do_POST(self):
+        received_at = utc_now_iso()
+        started = time.perf_counter()
+        if self.path.split("?", 1)[0] != self.server.webhook_path:
+            self._json(404, {"ok": False, "error": "unknown path"})
+            return
+        query = parse.parse_qs(parse.urlsplit(self.path).query)
+        if not verify_wechat_signature(self.server.token, query):
+            self._text(403, "invalid signature")
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        try:
+            message = parse_xml_message(body)
+            key = message_dedupe_key(message)
+            if not self.server.dedupe.mark_first_seen(key):
+                self.server.logger.write(
+                    {
+                        "ok": True,
+                        "received_at": received_at,
+                        "ignored": True,
+                        "reason": "duplicate message",
+                        "dedupe_key": key,
+                        "msg_id": message.get("MsgId", ""),
+                        "content": message.get("Content", ""),
+                        "ack_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                self._text(200, "success")
+                return
+            threading.Thread(target=self._process_async, args=(message, received_at, started, key), daemon=True).start()
+        except Exception as exc:
+            self.server.logger.write({"ok": False, "received_at": received_at, "error": str(exc)})
+        self._text(200, "success")
+
+    def _process_async(self, message, received_at, started, key):
+        try:
+            result = self.server.message_processor.handle(message, received_at, started)
+            result["dedupe_key"] = key
+            self.server.logger.write(result)
+        except Exception as exc:
+            self.server.logger.write(
+                {
+                    "ok": False,
+                    "received_at": received_at,
+                    "dedupe_key": key,
+                    "msg_id": message.get("MsgId", ""),
+                    "content": message.get("Content", ""),
+                    "touser": message.get("FromUserName", ""),
+                    "error": str(exc),
+                }
+            )
+
+    def _text(self, status, text):
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, status, payload):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)

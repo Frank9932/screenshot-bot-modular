@@ -1,0 +1,40 @@
+---
+- name: Deploy Screenshot Bot Modular to Windows 11
+  hosts: windows_wechat_bot
+  gather_facts: false
+
+  vars_files:
+    - vars/app-files.yml
+
+  pre_tasks:
+    - name: Validate deployment inputs
+      ansible.builtin.import_tasks: tasks/validate.yml
+      tags: always
+
+  tasks:
+    - name: Prepare target directories
+      ansible.builtin.import_tasks: tasks/prepare.yml
+      tags:
+        - prepare
+        - app
+
+    - name: Deploy application files and config
+      ansible.builtin.import_tasks: tasks/app.yml
+      tags: app
+
+    - name: Ensure Python runtime
+      ansible.builtin.import_tasks: tasks/python.yml
+      tags: python
+
+    - name: Deploy local secrets
+      ansible.builtin.import_tasks: tasks/secrets.yml
+      tags: secrets
+
+    - name: Configure optional startup task
+      ansible.builtin.import_tasks: tasks/startup.yml
+      tags: startup
+
+  post_tasks:
+    - name: Print deployment summary
+      ansible.builtin.import_tasks: tasks/summary.yml
+      tags: always

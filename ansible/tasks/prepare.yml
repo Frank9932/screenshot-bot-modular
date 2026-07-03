@@ -1,0 +1,11 @@
+---
+- name: Create install root
+  ansible.windows.win_file:
+    path: "{{ bot_install_dir }}"
+    state: directory
+
+- name: Create runtime directories
+  ansible.windows.win_file:
+    path: "{{ bot_install_dir }}\\{{ item }}"
+    state: directory
+  loop: "{{ runtime_dirs }}"

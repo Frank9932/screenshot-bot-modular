@@ -1,0 +1,6 @@
+{
+  "browser_targets": {{ bot_config.browser_targets | default({"enabled": false}) | to_nice_json }},
+  "virtual_desktop": {{ bot_config.virtual_desktop | default({"enabled": false}) | to_nice_json }},
+  "watermark": {{ bot_config.watermark | to_nice_json }},
+  "wechat_official_webhook": {{ bot_config.wechat_official_webhook | to_nice_json }}
+}

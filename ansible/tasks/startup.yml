@@ -1,0 +1,11 @@
+---
+- name: Create optional logon scheduled task
+  ansible.windows.win_shell: |
+    $taskName = "{{ startup_task_name | default('ScreenshotBotModularWebhook') }}"
+    $action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"{{ bot_install_dir }}\scripts\Start-WebhookBackground.ps1`\" -ConfigPath `\"{{ bot_install_dir }}\config.json`\""
+    schtasks.exe /Query /TN $taskName *> $null
+    if ($LASTEXITCODE -eq 0) {
+      schtasks.exe /Delete /TN $taskName /F | Out-Null
+    }
+    schtasks.exe /Create /TN $taskName /SC ONLOGON /RL HIGHEST /TR $action /F
+  when: create_startup_task_effective

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+/runtime/
+/logs/
+/screenshots/
+secrets.local.ps1
+ScreenshotTool.exe
+
+# Ansible: real inventory/credentials/secrets stay local, never committed
+ansible/inventory.yml
+ansible/group_vars/screenshot_bot_modular.yml
+ansible/files/secrets.local.ps1
+ansible/*.retry

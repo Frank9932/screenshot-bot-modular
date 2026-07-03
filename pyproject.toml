@@ -1,0 +1,8 @@
+[project]
+name = "screenshot-bot-modular-test"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["Pillow"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

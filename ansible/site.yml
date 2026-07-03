@@ -1,0 +1,3 @@
+---
+# Top-level entrypoint, reserved for multi-play orchestration.
+- ansible.builtin.import_playbook: deploy.yml

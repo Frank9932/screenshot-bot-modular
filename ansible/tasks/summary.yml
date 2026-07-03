@@ -1,0 +1,11 @@
+---
+- name: Print deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "Deployment completed on {{ inventory_hostname }}."
+      - "Install dir: {{ bot_install_dir }}"
+      - "Webhook port: {{ bot_config.wechat_official_webhook.port }} (local only; this repo does not manage a tunnel)"
+      - "Next steps:"
+      - "1. Point an existing/external tunnel or reverse proxy at http://127.0.0.1:{{ bot_config.wechat_official_webhook.port }}{{ bot_config.wechat_official_webhook.path }}."
+      - "2. Run ansible/webhook-start.yml to launch the webhook server."
+      - "3. Run ansible/webhook-status.yml to confirm it is healthy."

@@ -1,0 +1,91 @@
+{
+  "browser_targets": {
+    "enabled": true,
+    "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "profile_root": "runtime\\browser-profiles",
+    "raw_dir": "screenshots\\browser-raw",
+    "startup_timeout_seconds": 15,
+    "targets": {
+      "1": {
+        "name": "team-1",
+        "debug_port": 9221,
+        "profile_dir": "runtime\\browser-profiles\\team-1",
+        "start_url": "about:blank",
+        "match_title": "",
+        "match_url": ""
+      },
+      "2": {
+        "name": "team-2",
+        "debug_port": 9222,
+        "profile_dir": "runtime\\browser-profiles\\team-2",
+        "start_url": "about:blank",
+        "match_title": "",
+        "match_url": ""
+      },
+      "3": {
+        "name": "team-3",
+        "debug_port": 9223,
+        "profile_dir": "runtime\\browser-profiles\\team-3",
+        "start_url": "about:blank",
+        "match_title": "",
+        "match_url": ""
+      }
+    }
+  },
+  "virtual_desktop": {
+    "enabled": false,
+    "min_desktop": 1,
+    "max_desktop": 4,
+    "initial_desktop": 1,
+    "state_path": "runtime\\virtual-desktop-state.json",
+    "lock_path": "runtime\\virtual-desktop.lock",
+    "lock_timeout_seconds": 30,
+    "switch_key_delay_ms": 180,
+    "settle_delay_ms": 700,
+    "trigger_pattern": "^\\\\s*(\\\\d{1,2})\\\\s*$"
+  },
+  "watermark": {
+    "enabled": true,
+    "fields": [
+      {
+        "label": "Test Area",
+        "value": "EE-SCRB-RYG1A"
+      },
+      {
+        "label": "Test Item",
+        "value": "Burn-in-test"
+      }
+    ],
+    "lines": [],
+    "include_timestamp": true,
+    "timestamp_label": "Capture Time",
+    "label_separator": ": ",
+    "timestamp_prefix": "Time: ",
+    "timestamp_format": "yyyy.MM.dd HH:mm",
+    "font_family": "Microsoft YaHei",
+    "font_size": 36,
+    "text_color": "#FFFFFF",
+    "background_color": "#000000",
+    "background_opacity": 190,
+    "padding": 18,
+    "margin_left": 70,
+    "margin_bottom": 70,
+    "line_spacing": 8
+  },
+  "wechat_official_webhook": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8790,
+    "path": "/wechat/official/webhook",
+    "token_env": "WECHAT_OFFICIAL_WEBHOOK_TOKEN",
+    "appid_env": "WECHAT_APPID",
+    "appsecret_env": "WECHAT_APPSECRET",
+    "screenshot_dir": "screenshots",
+    "log_path": "logs\\wechat-official-webhook-events.jsonl",
+    "dedupe_ttl_seconds": 600,
+    "screenshot_tool": "ScreenshotTool.exe",
+    "capture_message_types": "none",
+    "capture_timeout_seconds": 15,
+    "ignore_message_types": "image"
+  }
+}

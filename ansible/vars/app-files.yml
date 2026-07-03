@@ -1,0 +1,20 @@
+---
+app_files:
+  - .gitignore
+  - README.md
+  - config.example.json
+  - secrets.local.example.ps1
+  - pyproject.toml
+  - requirements.txt
+  - ScreenshotTool.cs
+  - build-screenshot-tool.ps1
+
+app_dirs:
+  - src
+  - scripts
+  - docs
+
+runtime_dirs:
+  - logs
+  - screenshots
+  - runtime

@@ -1,0 +1,32 @@
+---
+- name: Check Screenshot Bot Modular webhook status
+  hosts: windows_wechat_bot
+  gather_facts: false
+
+  tasks:
+    - name: Query webhook status
+      ansible.windows.win_shell: |
+        $readyPath = "{{ bot_install_dir }}\runtime\wechat-official-webhook-ready.json"
+        $statePath = "{{ bot_install_dir }}\runtime\wechat-official-webhook-state.json"
+        $logPath = "{{ bot_install_dir }}\logs\wechat-official-webhook-events.jsonl"
+        $ready = if (Test-Path -LiteralPath $readyPath) { Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json } else { $null }
+        $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
+        $events = if (Test-Path -LiteralPath $logPath) { @(Get-Content -LiteralPath $logPath -Tail 5) } else { @() }
+        $localHealth = $null
+        try {
+          $localHealth = Invoke-RestMethod -Uri "http://127.0.0.1:{{ bot_config.wechat_official_webhook.port }}/health" -TimeoutSec 2
+        } catch {
+          $localHealth = [pscustomobject]@{ ok = $false; error = $_.Exception.Message }
+        }
+        [pscustomobject]@{
+          ready = $ready
+          state = $state
+          local_health = $localHealth
+          recent_events = $events
+        } | ConvertTo-Json -Depth 8
+      register: webhook_status
+      changed_when: false
+
+    - name: Print webhook status
+      ansible.builtin.debug:
+        var: webhook_status.stdout

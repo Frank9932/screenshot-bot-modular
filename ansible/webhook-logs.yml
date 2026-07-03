@@ -1,0 +1,31 @@
+---
+- name: Read Screenshot Bot Modular webhook logs
+  hosts: windows_wechat_bot
+  gather_facts: false
+
+  vars:
+    webhook_log_tail: 80
+
+  tasks:
+    - name: Read webhook logs
+      ansible.windows.win_shell: |
+        $paths = @(
+          "{{ bot_install_dir }}\logs\webhook-task.log",
+          "{{ bot_install_dir }}\runtime\wechat-official-webhook-server.out.log",
+          "{{ bot_install_dir }}\runtime\wechat-official-webhook-server.err.log",
+          "{{ bot_install_dir }}\logs\wechat-official-webhook-events.jsonl"
+        )
+        foreach ($path in $paths) {
+          "===== $path ====="
+          if (Test-Path -LiteralPath $path) {
+            Get-Content -LiteralPath $path -Tail {{ webhook_log_tail }}
+          } else {
+            "MISSING"
+          }
+        }
+      register: webhook_logs
+      changed_when: false
+
+    - name: Print webhook logs
+      ansible.builtin.debug:
+        var: webhook_logs.stdout
