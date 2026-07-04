@@ -73,6 +73,24 @@ class WeChatOfficialClient:
             raise RuntimeError("send message failed: " + json.dumps(result, ensure_ascii=False))
         return result
 
+    def download_media(self, access_token, media_id):
+        url = (
+            "https://api.weixin.qq.com/cgi-bin/media/get?access_token="
+            + parse.quote(access_token)
+            + "&media_id="
+            + parse.quote(media_id)
+        )
+        req = request.Request(url, method="GET")
+        with request.urlopen(req, timeout=30) as response:
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read()
+        # WeChat signals a failed media/get with a JSON error body instead of the file bytes.
+        if "json" in content_type or "text" in content_type:
+            payload = json.loads(body.decode("utf-8"))
+            _raise_for_invalid_token(payload)
+            raise RuntimeError("media download failed: " + json.dumps(payload, ensure_ascii=False))
+        return body
+
 
 def _raise_for_invalid_token(payload):
     if isinstance(payload, dict) and payload.get("errcode") in INVALID_TOKEN_ERRCODES:

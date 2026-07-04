@@ -7,12 +7,24 @@ from screenshot_bot.config import get_section, load_json_config, resolve_path
 from screenshot_bot.desktop import DesktopScreenshotService, VirtualDesktopSwitcher, parse_desktop_number
 from screenshot_bot.runtime.clock import utc_now_iso
 from screenshot_bot.runtime.latency_image import write_latency_image
+from screenshot_bot.screenshot_store import ScreenshotStore
 from screenshot_bot.wechat.image_sender import WeChatImageSender
+from screenshot_bot.wechat.media_downloader import WeChatMediaDownloader
 from screenshot_bot.wechat.webhook_server import WeChatWebhookServer
 
 
 class WeChatImageReplyWorkflow:
-    def __init__(self, config_path, image_sender, browser, desktop, virtual_desktop, screenshot_dir):
+    def __init__(
+        self,
+        config_path,
+        image_sender,
+        browser,
+        desktop,
+        virtual_desktop,
+        screenshot_dir,
+        media_downloader,
+        incoming_image_store,
+    ):
         self.config_path = config_path
         self.config = load_json_config(config_path)
         self.webhook_config = get_section(self.config, "wechat_official_webhook")
@@ -21,6 +33,8 @@ class WeChatImageReplyWorkflow:
         self.browser = browser
         self.desktop = desktop
         self.virtual_desktop = virtual_desktop
+        self.media_downloader = media_downloader
+        self.incoming_image_store = incoming_image_store
         self.virtual_desktop_config = get_section(self.config, "virtual_desktop")
         self.capture_message_types = _parse_type_set(self.webhook_config.get("capture_message_types", "none"))
         self.ignore_message_types = _parse_type_set(self.webhook_config.get("ignore_message_types", "image"), keep_disabled_words=True)
@@ -50,6 +64,9 @@ class WeChatImageReplyWorkflow:
             "content": content,
             "touser": touser,
         }
+
+        if msg_type == "image":
+            self._store_incoming_image(message, touser, result)
 
         image_result = self._build_response_image(message, result)
         if image_result.get("ignored"):
@@ -85,6 +102,21 @@ class WeChatImageReplyWorkflow:
         )
         return result
 
+    def _store_incoming_image(self, message, touser, result):
+        media_id = message.get("MediaId", "")
+        if not media_id:
+            return
+        started = time.perf_counter()
+        try:
+            image_bytes = self.media_downloader.download(media_id)
+            duration_ms = round((time.perf_counter() - started) * 1000.0)
+            record = self.incoming_image_store.save_screenshot(touser, image_bytes, duration_ms)
+            result["incoming_image_path"] = str(record.file_path)
+            result["incoming_image_size"] = record.size_bytes
+        except Exception as exc:
+            # Best-effort: a failed download/save must not block the reply flow.
+            result["incoming_image_error"] = str(exc)
+
     def _build_response_image(self, message, details):
         msg_type = message.get("MsgType", "")
         content = message.get("Content", "")
@@ -109,6 +141,7 @@ class WeChatImageReplyWorkflow:
                 if browser_team_id is not None:
                     capture_info = self.browser.capture(
                         browser_team_id,
+                        user_id=message.get("FromUserName", ""),
                         output_dir=self.screenshot_dir,
                         image_name=image_name,
                         timeout_seconds=self.capture_timeout_seconds,
@@ -213,7 +246,10 @@ def build_wechat_official_server(config_path, host, port, path):
 
     screenshot_dir = resolve_path(config_path, webhook.get("screenshot_dir"), "screenshots")
     log_path = resolve_path(config_path, webhook.get("log_path"), "logs/wechat-official-webhook-events.jsonl")
+    incoming_image_dir = resolve_path(config_path, webhook.get("incoming_image_dir"), "storage/incoming")
     image_sender = WeChatImageSender(appid, appsecret)
+    media_downloader = WeChatMediaDownloader(client=image_sender.client)
+    incoming_image_store = ScreenshotStore(base_dir=incoming_image_dir)
     browser = BrowserScreenshotService(config_path)
     desktop = DesktopScreenshotService(
         config_path,
@@ -221,7 +257,16 @@ def build_wechat_official_server(config_path, host, port, path):
         webhook.get("screenshot_dir", "screenshots"),
     )
     virtual_desktop = VirtualDesktopSwitcher(get_section(config, "virtual_desktop"), base_dir=Path(config_path).resolve().parent)
-    workflow = WeChatImageReplyWorkflow(config_path, image_sender, browser, desktop, virtual_desktop, screenshot_dir)
+    workflow = WeChatImageReplyWorkflow(
+        config_path,
+        image_sender,
+        browser,
+        desktop,
+        virtual_desktop,
+        screenshot_dir,
+        media_downloader,
+        incoming_image_store,
+    )
     return WeChatWebhookServer(
         (host, port),
         path,

@@ -1,10 +1,10 @@
 # Workflow Module
 
 ## Responsibility
-Coordinate capability modules into the WeChat image reply use case. This is the only layer that orchestrates browser capture, desktop capture, latency/error image creation, and WeChat image sending.
+Coordinate capability modules into the WeChat image reply use case. This is the only layer that orchestrates browser capture, desktop capture, latency/error image creation, WeChat image sending, and storing images users send to the bot.
 
 ## Public API
-- `WeChatImageReplyWorkflow(config_path, image_sender, browser, desktop, virtual_desktop, screenshot_dir)`
+- `WeChatImageReplyWorkflow(config_path, image_sender, browser, desktop, virtual_desktop, screenshot_dir, media_downloader, incoming_image_store)`
 - `WeChatImageReplyWorkflow.handle(message, received_at, started)`
 - `WeChatImageReplyWorkflow.ready_payload()`
 - `build_wechat_official_server(config_path, host, port, path)`
@@ -16,14 +16,25 @@ Coordinate capability modules into the WeChat image reply use case. This is the 
 - Environment variables defined by config: webhook token, AppID, AppSecret
 
 ## Output
-- Workflow result dictionary with screenshot, upload, send, and latency fields
+- Workflow result dictionary with screenshot, upload, send, latency, and incoming-image fields
 - Configured `WeChatWebhookServer` instance from the builder
+- For `image` messages, the user's uploaded photo saved via `incoming_image_store`
+  (`{incoming_image_dir}/{FromUserName}/...png`, default `storage/incoming`), independent of
+  whether the reply flow captures a screenshot back to them. A download/save failure is recorded
+  in `incoming_image_error` and does not block the reply.
+- For a `browser_target` capture reply, `message["FromUserName"]` is passed to
+  `browser.capture(..., user_id=...)` so that capture's own audit copy (see
+  `browser/README.md` → "Team-per-tab targets") is organized by requester, not just by which
+  team_id/tab they used. The workflow itself never needs to know tabs exist — it always calls
+  `browser.capture(team_id, user_id=...)` and the browser module resolves the tab from that
+  team_id's own config.
 
 ## Dependencies
 - Browser capability API
 - Desktop capability API
 - Runtime utility API
 - WeChat capability API
+- Screenshot store capability API
 - Shared config helpers
 
 ## Run
@@ -55,8 +66,14 @@ class MockDesktop:
     def capture(self, **kwargs): return {'published_path': 'mock.png', 'capture_ms': 1}
 class MockVD:
     enabled = False
+class MockMediaDownloader:
+    def download(self, media_id): return b'mock-image-bytes'
+from screenshot_bot.screenshot_store import ScreenshotStore
 
-wf = WeChatImageReplyWorkflow('config.example.json', MockSender(), MockBrowser(), MockDesktop(), MockVD(), 'runtime/mock')
+wf = WeChatImageReplyWorkflow(
+    'config.example.json', MockSender(), MockBrowser(), MockDesktop(), MockVD(), 'runtime/mock',
+    MockMediaDownloader(), ScreenshotStore(base_dir='runtime/mock-incoming'),
+)
 print(wf.handle({'MsgType': 'text', 'Content': '1', 'FromUserName': 'user', 'MsgId': '1'}, 'now', 0)['ok'])
 PY
 ```

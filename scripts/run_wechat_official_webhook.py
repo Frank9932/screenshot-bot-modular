@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,15 @@ def main():
         ready_path.parent.mkdir(parents=True, exist_ok=True)
         ready_path.write_text(json.dumps(server.ready_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(server.ready_payload, ensure_ascii=True), flush=True)
+
+    browser = getattr(server.message_processor, "browser", None)
+    if browser is not None and browser.targets.enabled:
+        def _warm_up():
+            results = browser.warm_up()
+            print(json.dumps({"browser_warm_up": results}, ensure_ascii=True), flush=True)
+
+        threading.Thread(target=_warm_up, daemon=True).start()
+
     server.serve_forever()
 
 
