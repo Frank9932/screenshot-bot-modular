@@ -7,9 +7,9 @@ Windows lab machines and the same WeChat Official Account.
 
 This repo excludes wx-cli, desktop WeChat polling, UI-driven WeChat sending, and Cloudflare
 tunnel management. Deploy stages only cover: directories, application files, Python venv,
-`ScreenshotTool.exe` build, and secrets delivery. Browser targets share the same Chrome
-DevTools ports as `screenshot-bot`'s `browser_targets`, so an already-running Chrome profile
-from that project is reused as-is; nothing here manages Chrome lifecycle at deploy time.
+`ScreenshotTool.exe` build, and secrets delivery. Browser targets are named tabs inside one
+shared Chrome process (`browser_targets.debug_port`/`profile_dir`), launched and owned by
+this app itself; nothing here manages Chrome lifecycle at deploy time.
 
 ## Prepare Inventory
 
@@ -21,8 +21,23 @@ cp files/secrets.local.example.ps1 files/secrets.local.ps1
 
 Edit `inventory.yml` with real WinRM credentials, `group_vars/screenshot_bot_modular.yml`
 with real deployment values, and `files/secrets.local.ps1` with the real
-`WECHAT_APPID` / `WECHAT_APPSECRET` / `WECHAT_OFFICIAL_WEBHOOK_TOKEN` values. None of these
-three files are committed to Git.
+`WECHAT_APPID` / `WECHAT_APPSECRET` / `WECHAT_OFFICIAL_WEBHOOK_TOKEN` values (required). None of
+these three files are committed to Git.
+
+If `group_vars/screenshot_bot_modular.yml` enables a `browser_targets` target with a `login`
+block (e.g. the `webstation-test` target used for testing against a login-gated internal site),
+`files/secrets.local.ps1` must also set that target's `username_env`/`password_env` pair —
+by default `WEBSTATION_USERNAME` / `WEBSTATION_PASSWORD`. These are optional: only required for
+targets that set `login.enabled: true`; omit them if no configured target needs a login.
+`ansible/secrets-status.yml` reports whether they're set (see "Runtime Operations" below), but
+unlike the WeChat secrets it does not fail deployment if they're missing, since login-gated
+targets are opt-in per environment.
+
+The example config maps WeChat team numbers `1`-`5` to the 5 tabs of one `webstation-test`
+target (identical `name`/`start_url`/`app_url`/`tab_count`/`login` on all 5 entries, only
+`"tab"` differs 0-4) — one login/credential pair covers all 5, since every tab shares that one
+Chrome process's session cookie. See `src/screenshot_bot/browser/README.md` → "Team-per-tab
+targets" for the full pattern.
 
 ## Run
 

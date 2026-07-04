@@ -7,6 +7,8 @@ Handle WeChat Official Account protocol and API calls. It does not decide which 
 - `WeChatWebhookServer(address, webhook_path, token, message_processor, ready_payload=None, log_path=None, dedupe_ttl_seconds=600)`
 - `WeChatOfficialClient(appid, appsecret)`
 - `WeChatImageSender(appid, appsecret, client=None)`
+- `WeChatMediaDownloader(appid=None, appsecret=None, client=None)`
+- `WeChatMediaDownloader.download(media_id) -> bytes`
 - `verify_wechat_signature(token, query)`
 - `parse_xml_message(body)`
 - `message_dedupe_key(message)`
@@ -16,11 +18,12 @@ Handle WeChat Official Account protocol and API calls. It does not decide which 
 - WeChat POST XML body
 - `message_processor` object exposing `handle(message, received_at, started)`
 - AppID/AppSecret and target user id for image sending
+- `MediaId` from an incoming image message for downloading
 
 ## Output
 - HTTP `success` ACK for WeChat POSTs
 - Parsed message dictionaries
-- WeChat media upload and image send API responses
+- WeChat media upload, image send, and media download (`cgi-bin/media/get`) API responses
 - JSONL event records through injected log path
 
 ## Dependencies

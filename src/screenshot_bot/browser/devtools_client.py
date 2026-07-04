@@ -3,65 +3,13 @@ import json
 import os
 import socket
 import struct
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 
 def http_json(url, timeout=5):
     with urlopen(url, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
-
-
-def find_page(port, target_config):
-    pages = http_json(f"http://127.0.0.1:{port}/json/list")
-    candidates = [page for page in pages if page.get("type") == "page" and page.get("webSocketDebuggerUrl")]
-    capture_candidates = [page for page in candidates if not _is_identity_page(page, target_config)]
-    match_url = str(target_config.get("match_url", "") or "")
-    match_title = str(target_config.get("match_title", "") or "")
-    search_pages = capture_candidates if capture_candidates else candidates
-    if match_url:
-        for page in search_pages:
-            if match_url in str(page.get("url", "")):
-                return page
-    if match_title:
-        for page in search_pages:
-            if match_title in str(page.get("title", "")):
-                return page
-    if capture_candidates:
-        return capture_candidates[0]
-    if candidates:
-        return candidates[0]
-
-    start_url = str(target_config.get("start_url", "about:blank") or "about:blank")
-    http_json(f"http://127.0.0.1:{port}/json/new?{quote(start_url, safe=':/?&=%#')}")
-    pages = http_json(f"http://127.0.0.1:{port}/json/list")
-    for page in pages:
-        if page.get("type") == "page" and page.get("webSocketDebuggerUrl"):
-            return page
-    raise RuntimeError(f"no debuggable page found on port {port}")
-
-
-def capture_page_png(websocket_url, timeout_seconds=15):
-    with DevToolsWebSocket(websocket_url, timeout=timeout_seconds) as client:
-        client.call("Page.enable")
-        client.call("Page.bringToFront")
-        result = client.call("Page.captureScreenshot", {"format": "png", "fromSurface": True})
-    return base64.b64decode(result["data"])
-
-
-def _is_identity_page(page, target_config):
-    title = str(page.get("title", ""))
-    url = str(page.get("url", ""))
-    identity_title = str(target_config.get("identity_title", "") or "")
-    identity_url = str(target_config.get("identity_url", "") or "")
-    start_url = str(target_config.get("start_url", "") or "")
-    if identity_title and identity_title in title:
-        return True
-    if identity_url and identity_url in url:
-        return True
-    if start_url and start_url == url and "browser-target-pages" in url:
-        return True
-    return False
 
 
 class DevToolsWebSocket:

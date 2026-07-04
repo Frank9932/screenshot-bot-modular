@@ -65,6 +65,22 @@ $readyFile = Join-Path $runtimeDir "wechat-official-webhook-ready.json"
 $statePath = Join-Path $runtimeDir "wechat-official-webhook-state.json"
 $serverOut = Join-Path $runtimeDir "wechat-official-webhook-server.out.log"
 $serverErr = Join-Path $runtimeDir "wechat-official-webhook-server.err.log"
+
+# A bare restart (schtasks re-running this script, or calling it again without stopping first)
+# must not leave the previous process running: Windows lets a second process bind the same
+# port via SO_REUSEADDR, so an un-killed old instance silently keeps running as an orphan
+# instead of failing loudly -- and, worse, ends up racing the new one over the same shared
+# Chrome profile directory (each instance's BrowserProfileManager independently decides "Chrome
+# isn't running yet, I'll launch it").
+if (Test-Path -LiteralPath $statePath) {
+    try {
+        $previousState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $previousState.webhook_pid) {
+            Stop-Process -Id ([int]$previousState.webhook_pid) -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+    }
+}
 Remove-Item -LiteralPath $readyFile, $statePath, $serverOut, $serverErr -Force -ErrorAction SilentlyContinue
 
 $python = Get-PythonPath

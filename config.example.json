@@ -2,33 +2,82 @@
   "browser_targets": {
     "enabled": true,
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "profile_root": "runtime\\browser-profiles",
+    "debug_port": 9221,
+    "profile_dir": "runtime\\browser-profiles\\shared",
     "raw_dir": "screenshots\\browser-raw",
     "startup_timeout_seconds": 15,
+    "ignore_certificate_errors": true,
+    "max_tabs": 10,
     "targets": {
       "1": {
-        "name": "team-1",
-        "debug_port": 9221,
-        "profile_dir": "runtime\\browser-profiles\\team-1",
-        "start_url": "about:blank",
-        "match_title": "",
-        "match_url": ""
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 5,
+        "tab": 0,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 300
+        }
       },
       "2": {
-        "name": "team-2",
-        "debug_port": 9222,
-        "profile_dir": "runtime\\browser-profiles\\team-2",
-        "start_url": "about:blank",
-        "match_title": "",
-        "match_url": ""
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 5,
+        "tab": 1,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 300
+        }
       },
       "3": {
-        "name": "team-3",
-        "debug_port": 9223,
-        "profile_dir": "runtime\\browser-profiles\\team-3",
-        "start_url": "about:blank",
-        "match_title": "",
-        "match_url": ""
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 5,
+        "tab": 2,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 300
+        }
+      },
+      "4": {
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 5,
+        "tab": 3,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 300
+        }
+      },
+      "5": {
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 5,
+        "tab": 4,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 300
+        }
       }
     }
   },
@@ -81,6 +130,7 @@
     "appid_env": "WECHAT_APPID",
     "appsecret_env": "WECHAT_APPSECRET",
     "screenshot_dir": "screenshots",
+    "incoming_image_dir": "storage\\incoming",
     "log_path": "logs\\wechat-official-webhook-events.jsonl",
     "dedupe_ttl_seconds": 600,
     "screenshot_tool": "ScreenshotTool.exe",
