@@ -133,5 +133,7 @@ See `src/screenshot_bot/workflow/README.md` for the module contract.
 
 - No wx-cli.
 - No desktop WeChat UI automation.
-- No Cloudflare tunnel management.
+- No *production* Cloudflare tunnel management (bring your own stable ingress for real use) —
+  `ansible/tunnel-start.yml`/`tunnel-stop.yml`/`tunnel-status.yml` are optional convenience
+  tooling for a throwaway quick tunnel, for testing only. See `ansible/README.md`.
 - No LINE transport.

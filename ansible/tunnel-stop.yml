@@ -1,0 +1,15 @@
+---
+- name: Stop the Screenshot Bot Modular quick tunnel
+  hosts: screenshot_bot_modular
+  gather_facts: false
+
+  tasks:
+    - name: Stop tunnel
+      ansible.windows.win_shell: |
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Stop-PublicTunnel.ps1"
+      register: tunnel_stop
+      changed_when: true
+
+    - name: Print tunnel stop result
+      ansible.builtin.debug:
+        var: tunnel_stop.stdout

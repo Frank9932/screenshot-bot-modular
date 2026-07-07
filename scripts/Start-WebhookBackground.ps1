@@ -71,17 +71,11 @@ $serverErr = Join-Path $runtimeDir "wechat-official-webhook-server.err.log"
 # port via SO_REUSEADDR, so an un-killed old instance silently keeps running as an orphan
 # instead of failing loudly -- and, worse, ends up racing the new one over the same shared
 # Chrome profile directory (each instance's BrowserProfileManager independently decides "Chrome
-# isn't running yet, I'll launch it").
-if (Test-Path -LiteralPath $statePath) {
-    try {
-        $previousState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($null -ne $previousState.webhook_pid) {
-            Stop-Process -Id ([int]$previousState.webhook_pid) -Force -ErrorAction SilentlyContinue
-        }
-    } catch {
-    }
-}
-Remove-Item -LiteralPath $readyFile, $statePath, $serverOut, $serverErr -Force -ErrorAction SilentlyContinue
+# isn't running yet, I'll launch it"). Stop-WebhookBackground.ps1 kills every process actually
+# running this webhook's entry script, not just the one this state file happens to remember, so
+# reuse it here instead of only stopping the last known PID.
+& (Join-Path $PSScriptRoot "Stop-WebhookBackground.ps1") -StatePath $statePath
+Remove-Item -LiteralPath $readyFile, $serverOut, $serverErr -Force -ErrorAction SilentlyContinue
 
 $python = Get-PythonPath
 $serverScript = Join-Path $root "scripts\run_wechat_official_webhook.py"

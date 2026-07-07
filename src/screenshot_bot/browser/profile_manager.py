@@ -1,4 +1,5 @@
 import os
+import threading
 from urllib.parse import urlparse
 
 from screenshot_bot.config import resolve_path
@@ -34,6 +35,16 @@ class BrowserProfileManager:
         self.service = CdpMultiTabService(port=self.port, max_tabs=self.section.get("max_tabs"))
         self._login_applied = set()
         self._closed_default_tabs = False
+        # Serializes tab provisioning (chrome launch, add_tab/adopt_tab, close_untracked_tabs,
+        # login). Without this, warm_up()'s background thread and a real request arriving at the
+        # same time (e.g. right after a restart) can interleave: add_tab()'s HTTP call to Chrome
+        # blocks and releases the GIL, so a second thread's close_untracked_tabs() can run in that
+        # window, see the first thread's brand new tab not yet registered in self.service._tabs,
+        # and close it as an "untracked default tab" -- the first thread then finishes registering
+        # a target_id that's already gone, and the next operation on it fails with
+        # "tab not debuggable". Screenshotting an already-established tab is not serialized here
+        # (only provisioning is), so steady-state captures don't pay this cost.
+        self._lock = threading.Lock()
 
     def tab_count(self, target):
         return max(1, int(target.get("tab_count", 1)))
@@ -43,37 +54,39 @@ class BrowserProfileManager:
         if not 0 <= tab_index < self.tab_count(target):
             raise ValueError(f"tab {tab_index} out of range for target {target_name} (tab_count={self.tab_count(target)})")
 
-        startup_info = self._ensure_chrome_running()
-        tab_name = target_name if tab_index == 0 else f"{target_name}_tab{tab_index}"
-        if not self.service.has_tab(tab_name):
-            if tab_index == 0:
-                url = str(target.get("start_url", "about:blank") or "about:blank")
-            else:
-                url = str(target.get("app_url") or target.get("start_url", "about:blank") or "about:blank")
-            # If this process restarted while Chrome kept running, a tab for this target may
-            # already be open (and possibly already logged in) from before — adopt it instead
-            # of opening a duplicate, since some login-gated sites allow only one active
-            # session per account and a second login attempt on a new tab would be rejected.
-            origin = _origin(url)
-            adopted = self.service.adopt_tab(tab_name, origin) if origin else None
-            if not adopted:
-                self.service.add_tab(tab_name, url)
-            # Chrome opens its own default "New Tab" on a fresh launch, since launch_chrome()
-            # passes no start URL. Closing it must happen AFTER our own first tab exists, not
-            # before: closing a browser's only remaining tab quits the whole Chrome process, so
-            # doing this before add_tab()/adopt_tab() above would kill Chrome instead of just
-            # tidying up its startup tab.
-            if not self._closed_default_tabs:
-                self.service.close_untracked_tabs()
-                self._closed_default_tabs = True
-        # Tracked separately from has_tab(): if _apply_login() raises (e.g. a missing login env
-        # var), the tab already exists in self.service by this point, but must NOT be treated as
-        # "handled" — otherwise every later call would skip _apply_login forever (since the tab
-        # already exists) and silently screenshot the unauthenticated login page with no error.
-        if tab_index == 0 and tab_name not in self._login_applied:
-            self._apply_login(tab_name, target)
-            self._login_applied.add(tab_name)
-        return tab_name, startup_info
+        with self._lock:
+            startup_info = self._ensure_chrome_running()
+            tab_name = target_name if tab_index == 0 else f"{target_name}_tab{tab_index}"
+            if not self.service.has_tab(tab_name):
+                if tab_index == 0:
+                    url = str(target.get("start_url", "about:blank") or "about:blank")
+                else:
+                    url = str(target.get("app_url") or target.get("start_url", "about:blank") or "about:blank")
+                # If this process restarted while Chrome kept running, a tab for this target may
+                # already be open (and possibly already logged in) from before — adopt it instead
+                # of opening a duplicate, since some login-gated sites allow only one active
+                # session per account and a second login attempt on a new tab would be rejected.
+                origin = _origin(url)
+                adopted = self.service.adopt_tab(tab_name, origin) if origin else None
+                if not adopted:
+                    self.service.add_tab(tab_name, url)
+                # Chrome opens its own default "New Tab" on a fresh launch, since launch_chrome()
+                # passes no start URL. Closing it must happen AFTER our own first tab exists, not
+                # before: closing a browser's only remaining tab quits the whole Chrome process,
+                # so doing this before add_tab()/adopt_tab() above would kill Chrome instead of
+                # just tidying up its startup tab.
+                if not self._closed_default_tabs:
+                    self.service.close_untracked_tabs()
+                    self._closed_default_tabs = True
+            # Tracked separately from has_tab(): if _apply_login() raises (e.g. a missing login
+            # env var), the tab already exists in self.service by this point, but must NOT be
+            # treated as "handled" — otherwise every later call would skip _apply_login forever
+            # (since the tab already exists) and silently screenshot the unauthenticated login
+            # page with no error.
+            if tab_index == 0 and tab_name not in self._login_applied:
+                self._apply_login(tab_name, target)
+                self._login_applied.add(tab_name)
+            return tab_name, startup_info
 
     def _ensure_chrome_running(self):
         if self._is_port_open():

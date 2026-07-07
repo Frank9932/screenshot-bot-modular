@@ -7,5 +7,8 @@
     if ($LASTEXITCODE -eq 0) {
       schtasks.exe /Delete /TN $taskName /F | Out-Null
     }
-    schtasks.exe /Create /TN $taskName /SC ONLOGON /RL HIGHEST /TR $action /F
+    # No /RL HIGHEST -- see webhook-start.yml: elevation mismatch between this task and a normal
+    # interactive console is what let a manual webhook restart fail to kill the process this task
+    # had started.
+    schtasks.exe /Create /TN $taskName /SC ONLOGON /TR $action /F
   when: create_startup_task_effective

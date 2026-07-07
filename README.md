@@ -8,10 +8,13 @@ This repo intentionally excludes:
 - wx-cli
 - desktop WeChat polling
 - UI-driven WeChat sending
-- Cloudflare tunnel creation or control
+- managing a *production* Cloudflare tunnel
 
-The tunnel must stay external. This repo only runs the local HTTP server behind whatever tunnel
-is already forwarding to it (see `ansible/README.md` for the deployed default port).
+For production, the tunnel stays external — this repo only runs the local HTTP server behind
+whatever tunnel is already forwarding to it (see `ansible/README.md` for the deployed default
+port). For testing, `scripts/Start-PublicTunnel.ps1`/`Stop-PublicTunnel.ps1` (and their
+`ansible/tunnel-*.yml` wrappers) are provided as optional convenience tooling for a throwaway
+Cloudflare quick tunnel — see "Local Run" below.
 
 ## Deployment
 
@@ -85,17 +88,17 @@ Run only the local webhook:
 powershell -ExecutionPolicy Bypass -File .\scripts\Start-WebhookOnly.ps1 -ConfigPath .\config.example.json
 ```
 
-Do not start or stop Cloudflare from this repo. Keep the existing tunnel pointed at:
+For a production deployment, keep the existing tunnel pointed at `http://127.0.0.1:8790` (or
+whatever port is configured) and don't start/stop it from here. For local testing, an optional
+throwaway quick tunnel is available:
 
-```text
-http://127.0.0.1:8790
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Start-PublicTunnel.ps1 -ConfigPath .\config.example.json
 ```
 
-WeChat Official Account URL:
-
-```text
-https://<current-tunnel-host>/wechat/official/webhook
-```
+It prints a fresh `https://<random>.trycloudflare.com/wechat/official/webhook` URL each time —
+paste that into the WeChat MP console (Settings & Development → Basic Configuration → Server
+Configuration). Stop it with `scripts\Stop-PublicTunnel.ps1`.
 
 ## Module Contracts
 

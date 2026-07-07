@@ -1,0 +1,33 @@
+---
+- name: Check the Screenshot Bot Modular quick tunnel status
+  hosts: screenshot_bot_modular
+  gather_facts: false
+
+  tasks:
+    - name: Query tunnel status
+      ansible.windows.win_shell: |
+        $statePath = "{{ bot_install_dir }}\runtime\public-tunnel-state.json"
+        $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
+        $running = $false
+        if ($null -ne $state -and $null -ne $state.pid) {
+          $running = $null -ne (Get-Process -Id ([int]$state.pid) -ErrorAction SilentlyContinue)
+        }
+        $reachable = $null
+        if ($null -ne $state -and $running) {
+          try {
+            $reachable = Invoke-RestMethod -Uri "$($state.tunnel_url)/health" -TimeoutSec 8
+          } catch {
+            $reachable = [pscustomobject]@{ ok = $false; error = $_.Exception.Message }
+          }
+        }
+        [pscustomobject]@{
+          state = $state
+          process_running = $running
+          reachable_from_this_host = $reachable
+        } | ConvertTo-Json -Depth 6
+      register: tunnel_status
+      changed_when: false
+
+    - name: Print tunnel status
+      ansible.builtin.debug:
+        var: tunnel_status.stdout
