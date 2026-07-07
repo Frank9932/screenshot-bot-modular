@@ -28,7 +28,24 @@
         schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
         $ErrorActionPreference = $previousErrorActionPreference
 
-        schtasks.exe /Create /TN $taskName /SC ONCE /ST 23:59 /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`"" /RL HIGHEST /IT /F | Out-Null
+        # Explicitly stop any previous webhook process HERE, in this WinRM session, rather than
+        # relying only on Start-WebhookBackground internal stop call once it is running
+        # under the scheduled task below. The scheduled task runs with an /IT (interactive token)
+        # session context that, observed in production, does not reliably terminate a process
+        # started in a different session, even for the same user account: schtasks
+        # End/Delete only removes the task definition, not a process it already detached via
+        # Start-Process, so the previous run tracked webhook_pid (and its child) can survive
+        # silently as an orphan, doubling up on Chrome/tab management and producing confusing
+        # tab-not-debuggable log noise from a process nothing is aware is still running.
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Stop-WebhookBackground.ps1" | Out-Null
+
+        # No /RL HIGHEST here: an elevated scheduled task and a normal (non-elevated) interactive
+        # console are different Windows integrity levels, and a lower-integrity process cannot
+        # Stop-Process a higher-integrity one even for the same user account -- that mismatch let
+        # a manual restart from a plain console silently fail to kill the process this task had
+        # started, and start a second, colliding instance instead. Nothing this task launches
+        # needs elevation.
+        schtasks.exe /Create /TN $taskName /SC ONCE /ST 23:59 /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`"" /IT /F | Out-Null
         schtasks.exe /Run /TN $taskName | Out-Null
 
         $ready = "{{ bot_install_dir }}\runtime\wechat-official-webhook-ready.json"

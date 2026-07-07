@@ -1,0 +1,68 @@
+---
+- name: Restart Screenshot Bot Modular webhook receiver
+  hosts: screenshot_bot_modular
+  gather_facts: false
+
+  vars:
+    webhook_task_name: ScreenshotBotModular-Webhook
+
+  tasks:
+    - name: Stop deployed webhook and any orphaned instance
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = "Continue"
+        schtasks.exe /End /TN "{{ webhook_task_name }}" 2>$null | Out-Null
+        schtasks.exe /Delete /TN "{{ webhook_task_name }}" /F 2>$null | Out-Null
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Stop-WebhookBackground.ps1"
+      register: webhook_restart_stop
+      changed_when: true
+
+    - name: Start webhook through an interactive scheduled task
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = "Stop"
+        $taskName = "{{ webhook_task_name }}"
+        $runner = "{{ bot_install_dir }}\logs\run-webhook.ps1"
+        $stdoutLog = "{{ bot_install_dir }}\logs\webhook-task.log"
+        $script = "{{ bot_install_dir }}\scripts\Start-WebhookBackground.ps1"
+
+        @"
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+        Set-Location -LiteralPath "{{ bot_install_dir }}"
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$script" -ConfigPath "{{ bot_install_dir }}\config.json" *> "$stdoutLog"
+        exit `$LASTEXITCODE
+        "@ | Set-Content -LiteralPath $runner -Encoding ASCII
+
+        # No /RL HIGHEST -- see the matching comment in webhook-start.yml: an elevated task and a
+        # non-elevated manual console are different integrity levels, and the lower one is not
+        # able to kill the higher one, which is what let a manual restart double-start the webhook.
+        schtasks.exe /Create /TN $taskName /SC ONCE /ST 23:59 /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`"" /IT /F | Out-Null
+        schtasks.exe /Run /TN $taskName | Out-Null
+
+        $ready = "{{ bot_install_dir }}\runtime\wechat-official-webhook-ready.json"
+        $state = "{{ bot_install_dir }}\runtime\wechat-official-webhook-state.json"
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((!(Test-Path -LiteralPath $ready) -or !(Test-Path -LiteralPath $state)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+        if (!(Test-Path -LiteralPath $ready)) { throw "Webhook did not become ready. See $stdoutLog" }
+        if (!(Test-Path -LiteralPath $state)) { throw "Webhook state was not written. See $stdoutLog" }
+        Get-Content -LiteralPath $state -Raw
+      register: webhook_restart_start
+      changed_when: true
+
+    - name: Wait for browser warm_up to finish and print it
+      ansible.windows.win_shell: |
+        $deadline = (Get-Date).AddSeconds(30)
+        $outLog = "{{ bot_install_dir }}\runtime\wechat-official-webhook-server.out.log"
+        while ((Get-Date) -lt $deadline) {
+          $content = Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue
+          if ($content -match "browser_warm_up") { break }
+          Start-Sleep -Seconds 2
+        }
+        Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue
+      register: webhook_restart_warmup
+      changed_when: false
+
+    - name: Print restart result
+      ansible.builtin.debug:
+        msg:
+          - "{{ webhook_restart_start.stdout }}"
+          - "--- browser warm_up log ---"
+          - "{{ webhook_restart_warmup.stdout }}"

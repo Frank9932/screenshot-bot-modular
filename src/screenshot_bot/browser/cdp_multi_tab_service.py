@@ -365,14 +365,24 @@ class CdpMultiTabService:
             client, f"document.querySelector({json.dumps(username_selector)}) === null", timeout_seconds
         )
 
-    def _get_page(self, name):
+    def _get_page(self, name, timeout_seconds=3, poll_interval=0.2):
         target_id = self._tabs.get(name)
         if target_id is None:
             raise KeyError(f"unknown tab: {name}")
-        page = self._pages_by_target_id().get(target_id)
-        if page is None or not page.get("webSocketDebuggerUrl"):
-            raise RuntimeError(f"tab not debuggable: {name}")
-        return page
+        # A tab add_tab() just created can take Chrome a brief moment to fully register (its
+        # devtools target may not have a webSocketDebuggerUrl yet on the very first /json/list
+        # right after creation) -- retry briefly instead of failing immediately on what's often
+        # just a startup timing gap, not a real problem with the tab.
+        deadline = time.perf_counter() + timeout_seconds
+        page = None
+        while True:
+            page = self._pages_by_target_id().get(target_id)
+            if page is not None and page.get("webSocketDebuggerUrl"):
+                return page
+            if time.perf_counter() >= deadline:
+                break
+            time.sleep(poll_interval)
+        raise RuntimeError(f"tab not debuggable: {name}")
 
     def _pages_by_target_id(self):
         return {page["id"]: page for page in http_json(f"http://{self.host}:{self.port}/json/list")}

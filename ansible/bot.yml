@@ -1,0 +1,32 @@
+---
+# Single entry point for ad-hoc operational commands via scripts/Bot.ps1, e.g.:
+#   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=status"
+#   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=browser bot_action=restart"
+#   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=webhook bot_action=logs bot_tail=200"
+- name: Run a Screenshot Bot Modular CLI command
+  hosts: screenshot_bot_modular
+  gather_facts: false
+
+  vars:
+    bot_action: ""
+    bot_tail: 80
+
+  tasks:
+    - name: Validate bot_command was provided
+      ansible.builtin.assert:
+        that:
+          - bot_command is defined
+          - bot_command | length > 0
+        fail_msg: >-
+          Pass -e "bot_command=<status|webhook|browser|tunnel>" (and bot_action=<...> where
+          applicable, e.g. bot_action=restart).
+
+    - name: Run Bot.ps1
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Bot.ps1" {{ bot_command }} {{ bot_action }} -ConfigPath "{{ bot_install_dir }}\config.json" -Tail {{ bot_tail }}
+      register: bot_result
+      changed_when: true
+
+    - name: Print result
+      ansible.builtin.debug:
+        var: bot_result.stdout
