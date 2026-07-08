@@ -12,6 +12,11 @@ from screenshot_bot.wechat.image_sender import WeChatImageSender
 from screenshot_bot.wechat.media_downloader import WeChatMediaDownloader
 from screenshot_bot.wechat.webhook_server import WeChatWebhookServer
 
+from .help_text import CHANNEL_UNASSIGNED_PROMPT, GENERAL_HELP_TEXT, GENERAL_HELP_WORDS
+from .user_team_tracker import UNASSIGNED, UserTeamTracker
+from .watermark_commands import HELP_TEXT as WATERMARK_HELP_TEXT
+from .watermark_commands import parse_watermark_command
+
 
 class WeChatImageReplyWorkflow:
     def __init__(
@@ -35,6 +40,9 @@ class WeChatImageReplyWorkflow:
         self.virtual_desktop = virtual_desktop
         self.media_downloader = media_downloader
         self.incoming_image_store = incoming_image_store
+        self.user_team_tracker = UserTeamTracker(
+            resolve_path(config_path, self.webhook_config.get("user_team_tracker_path"), "runtime/user-team-tracker.json")
+        )
         self.virtual_desktop_config = get_section(self.config, "virtual_desktop")
         self.capture_message_types = _parse_type_set(self.webhook_config.get("capture_message_types", "none"))
         self.ignore_message_types = _parse_type_set(self.webhook_config.get("ignore_message_types", "image"), keep_disabled_words=True)
@@ -54,19 +62,70 @@ class WeChatImageReplyWorkflow:
         msg_type = message.get("MsgType", "")
         content = message.get("Content", "")
         touser = message.get("FromUserName", "")
+        # Field order matters for readability, not just correctness: received_at/msg_type/touser
+        # first is what you actually scan for skimming a busy JSONL log, "ok" last reads as the
+        # final verdict on the line.
         result = {
-            "ok": False,
             "received_at": received_at,
+            "msg_type": msg_type,
+            "touser": touser,
+            "content": content,
             "msg_id": message.get("MsgId", ""),
             "create_time": message.get("CreateTime", ""),
-            "msg_type": msg_type,
             "event": message.get("Event", ""),
-            "content": content,
-            "touser": touser,
+            "ok": False,
         }
+
+        if msg_type == "text":
+            if content.strip().lower() in GENERAL_HELP_WORDS:
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                send_info = self.image_sender.send_text(touser, GENERAL_HELP_TEXT)
+                result.update(
+                    {
+                        "ok": True,
+                        "reply_text": GENERAL_HELP_TEXT,
+                        "send_response": send_info.get("send_response", {}),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
+
+            watermark_command = parse_watermark_command(content)
+            if watermark_command is not None:
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                reply_text = self._handle_watermark_command(watermark_command)
+                send_info = self.image_sender.send_text(touser, reply_text)
+                result.update(
+                    {
+                        "ok": True,
+                        "watermark_command": watermark_command,
+                        "reply_text": reply_text,
+                        "send_response": send_info.get("send_response", {}),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
 
         if msg_type == "image":
             self._store_incoming_image(message, touser, result)
+            # A photo carries no channel of its own -- if this sender has never picked a
+            # channel (no prior digit message), there is nothing to capture for them yet.
+            # Nudge them instead of silently archiving the photo with no reply at all.
+            if self.user_team_tracker.get_team(touser) == UNASSIGNED:
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                send_info = self.image_sender.send_text(touser, CHANNEL_UNASSIGNED_PROMPT)
+                result.update(
+                    {
+                        "ok": True,
+                        "reply_text": CHANNEL_UNASSIGNED_PROMPT,
+                        "send_response": send_info.get("send_response", {}),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
 
         image_result = self._build_response_image(message, result)
         if image_result.get("ignored"):
@@ -102,6 +161,53 @@ class WeChatImageReplyWorkflow:
         )
         return result
 
+    def _handle_watermark_command(self, command):
+        action = command.get("action")
+        if action == "help" or "team_id" not in command:
+            return WATERMARK_HELP_TEXT
+
+        team_id = command["team_id"]
+        if team_id not in self.browser.targets.targets:
+            return f"未知频道编号: {team_id}\n\n{WATERMARK_HELP_TEXT}"
+
+        if action == "status":
+            status = self.browser.describe_watermark(team_id)
+            lines = [f"频道{team_id}当前水印设置:"]
+            for index, field in enumerate(status["fields"], start=1):
+                lines.append(f"  {index}. {field['label']}{': ' if field['label'] else ''}{field['value']}")
+            lines.append(f"背景不透明度: {status['background_opacity']}")
+            lines.append("(已自定义)" if status["customized"] else "(使用默认设置)")
+            return "\n".join(lines)
+
+        if action == "reset":
+            self.browser.reset_watermark(team_id)
+            return f"频道{team_id}的水印设置已恢复默认。"
+
+        if action == "opacity":
+            value = command.get("value", "")
+            if not value.isdigit():
+                return f"透明度需为0-255之间的整数。\n\n{WATERMARK_HELP_TEXT}"
+            try:
+                self.browser.set_watermark_opacity(team_id, int(value))
+            except ValueError as exc:
+                return f"{exc}\n\n{WATERMARK_HELP_TEXT}"
+            return f"频道{team_id}水印背景不透明度已设置为{value}。"
+
+        if action == "set_field":
+            index = command.get("index", "")
+            if not index.isdigit():
+                return f"序号需为数字。\n\n{WATERMARK_HELP_TEXT}"
+            value = command.get("value", "")
+            try:
+                self.browser.set_watermark_field(team_id, int(index) - 1, value)
+            except IndexError as exc:
+                return str(exc)
+            if not value.strip():
+                return f"频道{team_id}水印第{index}行已清空。"
+            return f"频道{team_id}水印第{index}行已更新为: {value}"
+
+        return WATERMARK_HELP_TEXT
+
     def _store_incoming_image(self, message, touser, result):
         media_id = message.get("MediaId", "")
         if not media_id:
@@ -110,7 +216,12 @@ class WeChatImageReplyWorkflow:
         try:
             image_bytes = self.media_downloader.download(media_id)
             duration_ms = round((time.perf_counter() - started) * 1000.0)
-            record = self.incoming_image_store.save_screenshot(touser, image_bytes, duration_ms)
+            # A photo carries no channel of its own -- file it under whichever channel this
+            # sender most recently joined with a text digit, so incoming photos land in the
+            # same one-folder-per-channel layout as outgoing screenshots (see UserTeamTracker).
+            channel_id = self.user_team_tracker.get_team(touser)
+            store_key = f"channel_{channel_id}"
+            record = self.incoming_image_store.save_screenshot(store_key, image_bytes, duration_ms)
             result["incoming_image_path"] = str(record.file_path)
             result["incoming_image_size"] = record.size_bytes
         except Exception as exc:
@@ -120,8 +231,18 @@ class WeChatImageReplyWorkflow:
     def _build_response_image(self, message, details):
         msg_type = message.get("MsgType", "")
         content = message.get("Content", "")
+        touser = message.get("FromUserName", "")
         message_text = content if msg_type == "text" else f"<{msg_type}>"
         browser_team_id = self.browser.parse_team_id(message_text) if msg_type == "text" else None
+        if msg_type == "text" and browser_team_id is not None:
+            # Sending a channel digit both captures immediately (unchanged) and joins that
+            # channel -- this is the only place channel membership is ever set.
+            self.user_team_tracker.set_team(touser, browser_team_id)
+        if msg_type == "image":
+            # A photo has no channel of its own -- capture whichever channel this sender last
+            # joined. handle() already returned early (before reaching here) if they've never
+            # joined one, so this is always a real channel by this point.
+            browser_team_id = self.user_team_tracker.get_team(touser)
         desktop_number = None
         if msg_type == "text" and browser_team_id is None and self.virtual_desktop.enabled:
             desktop_number = parse_desktop_number(message_text, self.virtual_desktop_config)
@@ -132,7 +253,13 @@ class WeChatImageReplyWorkflow:
         if msg_type in self.ignore_message_types and not should_capture_message(msg_type, desktop_number, browser_team_id, self.capture_message_types):
             return {"ignored": True, "reason": "message_type_disabled"}
 
-        image_name = f"wechat-official-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
+        if browser_team_id is not None:
+            name_prefix = f"channel{browser_team_id}"
+        elif desktop_number is not None:
+            name_prefix = f"desktop{desktop_number}"
+        else:
+            name_prefix = "wechat-official"
+        image_name = f"{name_prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
         image_path = self.screenshot_dir / image_name
         details["capture_started_at"] = utc_now_iso()
 
@@ -141,7 +268,7 @@ class WeChatImageReplyWorkflow:
                 if browser_team_id is not None:
                     capture_info = self.browser.capture(
                         browser_team_id,
-                        user_id=message.get("FromUserName", ""),
+                        user_id=touser,
                         output_dir=self.screenshot_dir,
                         image_name=image_name,
                         timeout_seconds=self.capture_timeout_seconds,

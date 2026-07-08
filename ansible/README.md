@@ -60,6 +60,18 @@ Run a single stage when iterating:
 ansible-playbook -i ansible/inventory.yml ansible/deploy.yml --tags app
 ansible-playbook -i ansible/inventory.yml ansible/deploy.yml --tags python
 ansible-playbook -i ansible/inventory.yml ansible/deploy.yml --tags secrets
+ansible-playbook -i ansible/inventory.yml ansible/deploy.yml --tags cloudflared
+```
+
+A full `deploy.yml` run also ensures `cloudflared.exe` is present (tries `winget install
+Cloudflare.cloudflared` first, falls back to downloading the binary straight from Cloudflare's
+GitHub releases into `runtime\cloudflared\cloudflared.exe` if winget is unavailable) — set
+`bot_install_cloudflared: false` in group_vars to skip this on hosts that already manage it some
+other way. To add cloudflared to a host that's already deployed, without re-running the rest of
+`deploy.yml`:
+
+```bash
+ansible-playbook -i ansible/inventory.yml ansible/tunnel-deploy.yml --limit <host>
 ```
 
 ## Runtime Operations

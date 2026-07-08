@@ -12,5 +12,6 @@
 - name: Normalize optional deployment defaults
   ansible.builtin.set_fact:
     bot_install_python_effective: "{{ bot_install_python | default(true) | bool }}"
+    bot_install_cloudflared_effective: "{{ bot_install_cloudflared | default(true) | bool }}"
     create_startup_task_effective: "{{ create_startup_task | default(false) | bool }}"
   changed_when: false

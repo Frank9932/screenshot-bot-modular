@@ -6,7 +6,9 @@ Handle WeChat Official Account protocol and API calls. It does not decide which 
 ## Public API
 - `WeChatWebhookServer(address, webhook_path, token, message_processor, ready_payload=None, log_path=None, dedupe_ttl_seconds=600)`
 - `WeChatOfficialClient(appid, appsecret)`
-- `WeChatImageSender(appid, appsecret, client=None)`
+- `WeChatImageSender(appid, appsecret, client=None)` — `send_image_file(touser, image_path)` and
+  `send_text(touser, content)`, both retrying once on an expired/invalid access token
+- `WeChatOfficialClient.send_customer_text(access_token, touser, content)`
 - `WeChatMediaDownloader(appid=None, appsecret=None, client=None)`
 - `WeChatMediaDownloader.download(media_id) -> bytes`
 - `verify_wechat_signature(token, query)`
@@ -23,7 +25,7 @@ Handle WeChat Official Account protocol and API calls. It does not decide which 
 ## Output
 - HTTP `success` ACK for WeChat POSTs
 - Parsed message dictionaries
-- WeChat media upload, image send, and media download (`cgi-bin/media/get`) API responses
+- WeChat media upload, image send, text send, and media download (`cgi-bin/media/get`) API responses
 - JSONL event records through injected log path
 
 ## Dependencies

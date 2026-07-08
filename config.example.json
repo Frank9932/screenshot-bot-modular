@@ -98,11 +98,11 @@
     "fields": [
       {
         "label": "Test Area",
-        "value": "EE-SCRB-RYG1A"
+        "value": ""
       },
       {
         "label": "Test Item",
-        "value": "Burn-in-test"
+        "value": ""
       }
     ],
     "lines": [],
@@ -115,7 +115,7 @@
     "font_size": 36,
     "text_color": "#FFFFFF",
     "background_color": "#000000",
-    "background_opacity": 190,
+    "background_opacity": 100,
     "padding": 18,
     "margin_left": 70,
     "margin_bottom": 70,

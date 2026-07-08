@@ -1,0 +1,96 @@
+---
+- name: Check cloudflared command
+  ansible.windows.win_shell: |
+    $candidates = @(
+      "C:\Program Files (x86)\cloudflared\cloudflared.exe",
+      "C:\Program Files\cloudflared\cloudflared.exe",
+      "{{ bot_install_dir }}\runtime\cloudflared\cloudflared.exe"
+    )
+    foreach ($candidate in $candidates) {
+      if (Test-Path -LiteralPath $candidate) {
+        $candidate
+        exit 0
+      }
+    }
+
+    $cmd = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+      $cmd.Source
+      exit 0
+    }
+    exit 1
+  register: cloudflared_check
+  changed_when: false
+  failed_when: false
+
+- name: Check winget when cloudflared is missing
+  ansible.windows.win_shell: |
+    $cmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { exit 1 }
+    $cmd.Source
+  register: cloudflared_winget_check
+  changed_when: false
+  failed_when: false
+  when:
+    - bot_install_cloudflared_effective
+    - cloudflared_check.rc != 0
+
+- name: Install cloudflared with winget
+  ansible.windows.win_shell: |
+    winget install --id {{ cloudflared_winget_id }} --exact --source winget --accept-package-agreements --accept-source-agreements
+  register: cloudflared_winget_install
+  failed_when: false
+  changed_when: "'No newer package versions' not in cloudflared_winget_install.stdout"
+  when:
+    - bot_install_cloudflared_effective
+    - cloudflared_check.rc != 0
+    - cloudflared_winget_check.rc == 0
+
+# Falls back to a direct binary download when winget is unavailable, or when it ran but the
+# install still can't be found afterward (e.g. a stale winget source cache) -- same fallback
+# shape as tasks/python.yml. This lands in one of the paths Resolve-Cloudflared in
+# Start-PublicTunnel.ps1 already checks directly on disk, so it works without depending on PATH
+# having been refreshed in this WinRM session.
+- name: Re-check cloudflared command after winget attempt
+  ansible.windows.win_shell: |
+    $candidates = @(
+      "C:\Program Files (x86)\cloudflared\cloudflared.exe",
+      "C:\Program Files\cloudflared\cloudflared.exe",
+      "{{ bot_install_dir }}\runtime\cloudflared\cloudflared.exe"
+    )
+    foreach ($candidate in $candidates) {
+      if (Test-Path -LiteralPath $candidate) {
+        $candidate
+        exit 0
+      }
+    }
+    $cmd = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+      $cmd.Source
+      exit 0
+    }
+    exit 1
+  register: cloudflared_recheck
+  changed_when: false
+  failed_when: false
+  when:
+    - bot_install_cloudflared_effective
+    - cloudflared_check.rc != 0
+
+- name: Create cloudflared runtime directory
+  ansible.windows.win_file:
+    path: "{{ bot_install_dir }}\\runtime\\cloudflared"
+    state: directory
+  when:
+    - bot_install_cloudflared_effective
+    - cloudflared_check.rc != 0
+    - cloudflared_recheck.rc | default(1) != 0
+
+- name: Download cloudflared fallback binary
+  ansible.windows.win_get_url:
+    url: "{{ cloudflared_download_url }}"
+    dest: "{{ bot_install_dir }}\\runtime\\cloudflared\\cloudflared.exe"
+  when:
+    - bot_install_cloudflared_effective
+    - cloudflared_check.rc != 0
+    - cloudflared_recheck.rc | default(1) != 0

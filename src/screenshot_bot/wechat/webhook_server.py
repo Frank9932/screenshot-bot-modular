@@ -68,21 +68,23 @@ class WeChatWebhookHandler(BaseHTTPRequestHandler):
             if not self.server.dedupe.mark_first_seen(key):
                 self.server.logger.write(
                     {
-                        "ok": True,
                         "received_at": received_at,
+                        "msg_type": message.get("MsgType", ""),
+                        "touser": message.get("FromUserName", ""),
+                        "content": message.get("Content", ""),
+                        "msg_id": message.get("MsgId", ""),
+                        "dedupe_key": key,
                         "ignored": True,
                         "reason": "duplicate message",
-                        "dedupe_key": key,
-                        "msg_id": message.get("MsgId", ""),
-                        "content": message.get("Content", ""),
                         "ack_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                        "ok": True,
                     }
                 )
                 self._text(200, "success")
                 return
             threading.Thread(target=self._process_async, args=(message, received_at, started, key), daemon=True).start()
         except Exception as exc:
-            self.server.logger.write({"ok": False, "received_at": received_at, "error": str(exc)})
+            self.server.logger.write({"received_at": received_at, "error": str(exc), "ok": False})
         self._text(200, "success")
 
     def _process_async(self, message, received_at, started, key):
@@ -93,13 +95,14 @@ class WeChatWebhookHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.server.logger.write(
                 {
-                    "ok": False,
                     "received_at": received_at,
-                    "dedupe_key": key,
-                    "msg_id": message.get("MsgId", ""),
-                    "content": message.get("Content", ""),
+                    "msg_type": message.get("MsgType", ""),
                     "touser": message.get("FromUserName", ""),
+                    "content": message.get("Content", ""),
+                    "msg_id": message.get("MsgId", ""),
+                    "dedupe_key": key,
                     "error": str(exc),
+                    "ok": False,
                 }
             )
 

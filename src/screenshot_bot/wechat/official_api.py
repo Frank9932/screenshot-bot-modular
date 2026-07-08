@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from urllib import parse, request
 
+from screenshot_bot.runtime.console_log import log_line
+
 TOKEN_REFRESH_MARGIN_SECONDS = 300
 INVALID_TOKEN_ERRCODES = {40001, 40014, 42001}
 
@@ -45,7 +47,7 @@ class WeChatOfficialClient:
         response = http_json("POST", url, payload)
         printable = dict(response)
         printable.pop("access_token", None)
-        print("wechat stable_token response:", json.dumps(printable, ensure_ascii=False, separators=(",", ":")), flush=True)
+        log_line("wechat", f"stable_token response: {json.dumps(printable, ensure_ascii=False, separators=(',', ':'))}")
         if response.get("errcode") not in [None, 0] or not response.get("access_token"):
             raise RuntimeError("access_token failed: " + json.dumps(printable, ensure_ascii=False))
         return response["access_token"], int(response.get("expires_in", 7200))
@@ -57,7 +59,7 @@ class WeChatOfficialClient:
         with request.urlopen(req, timeout=30) as response:
             text = response.read().decode("utf-8")
         payload = json.loads(text)
-        print("wechat media upload response:", text, flush=True)
+        log_line("wechat", f"media upload response: {text}")
         _raise_for_invalid_token(payload)
         if payload.get("errcode") not in [None, 0] or not payload.get("media_id"):
             raise RuntimeError("upload material failed: " + text)
@@ -67,7 +69,17 @@ class WeChatOfficialClient:
         url = "https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=" + parse.quote(access_token)
         payload = {"touser": touser, "msgtype": "image", "image": {"media_id": media_id}}
         result = http_json("POST", url, payload)
-        print("wechat image send response:", json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
+        log_line("wechat", f"image send to {touser}: {json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
+        _raise_for_invalid_token(result)
+        if result.get("errcode") != 0:
+            raise RuntimeError("send message failed: " + json.dumps(result, ensure_ascii=False))
+        return result
+
+    def send_customer_text(self, access_token, touser, content):
+        url = "https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=" + parse.quote(access_token)
+        payload = {"touser": touser, "msgtype": "text", "text": {"content": content}}
+        result = http_json("POST", url, payload)
+        log_line("wechat", f"text send to {touser}: {json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
         _raise_for_invalid_token(result)
         if result.get("errcode") != 0:
             raise RuntimeError("send message failed: " + json.dumps(result, ensure_ascii=False))

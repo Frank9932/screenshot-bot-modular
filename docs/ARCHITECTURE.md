@@ -41,21 +41,29 @@ Several `team_id`s can share one physical multi-tab target by giving them identi
 `name`/`start_url`/`app_url`/`tab_count`/`login` and only varying a `"tab"` field (e.g. WeChat
 team numbers `1`-`5` each pinned to one tab of one login-gated site). `capture()` resolves
 `tab` from that field when the caller doesn't pass one explicitly, so the workflow layer never
-needs to know tabs exist. `BrowserScreenshotService.warm_up()` opens/logs into every configured
-target before the first real request; when several `team_id`s share a target name, it only
-does that work once (not once per team_id), since a shared login attempted N times back-to-back
-races against itself.
+needs to know tabs exist. `BrowserScreenshotService.warm_up(team_ids=None)` opens/logs into each
+requested team's own tab before the first real request (all of them if `team_ids` is omitted);
+when several `team_id`s share a target name, only that target's session is established once
+(not once per team_id), since a shared login attempted N times back-to-back races against
+itself. Warming up one team never opens a *different* team's tab as a side effect, even when
+they share a physical target — see `browser/README.md` → "Startup warm-up".
 
 `browser/devtools_client.py` owns the shared low-level primitives (`http_json`, the raw
 `DevToolsWebSocket` client) that `cdp_multi_tab_service.py` is built on.
 
 `browser/watermark.py` owns PNG watermark rendering and has no transport knowledge.
 
+`browser/watermark_settings.py` owns per-team overrides (`TeamWatermarkSettingsStore`) on top
+of the global `watermark` config — a field's value or the background opacity, keyed by
+`team_id`, persisted as one small JSON file. `resolve_watermark_config()` merges an override
+onto the base config for one capture; nothing is ever mutated on the shared base config itself.
+
 `browser/screenshot_service.py` is the public browser screenshot API: it ensures the shared
 Chrome process and the target's tab (given a `team_id` and tab index) exist, captures via
 `CdpMultiTabService`, saves the raw bytes through `screenshot_store.ScreenshotStore` under
-`{user_id or target_name}/tab_{tab}/...` for audit (organized by requester when the caller
-passes a `user_id`, e.g. the WeChat `FromUserName`), then watermarks the published copy.
+`team_{team_id}/{user_id or target_name}/tab_{tab}/...` for audit (team first so all of one
+team's captures are easy to find regardless of who requested them, then by requester when the
+caller passes a `user_id`, e.g. the WeChat `FromUserName`), then watermarks the published copy.
 
 See `src/screenshot_bot/browser/README.md` for the module contract.
 
@@ -75,6 +83,11 @@ See `src/screenshot_bot/desktop/README.md` for the module contract.
 
 `runtime/clock.py` provides timestamp helpers.
 
+`runtime/console_log.py` provides `log_line(tag, message)` — every ad hoc console print used as
+informal logging elsewhere in this codebase goes through this instead of a bare `print()`, so a
+busy `server.out.log` can be scanned by timestamp and source (`wechat`, `browser`, `startup`,
+`warmup`) instead of guessing from unlabeled text.
+
 `runtime/latency_image.py` generates latency-test and capture-error PNGs.
 
 See `src/screenshot_bot/runtime/README.md` for the module contract.
@@ -84,11 +97,14 @@ See `src/screenshot_bot/runtime/README.md` for the module contract.
 `screenshot_store/store.py` saves already-captured image bytes to
 `storage/screenshots/{key}/YYYYMMDD_HHMMSS_mmm_{duration_ms}ms.png` under a caller-chosen key,
 and returns a `ScreenshotRecord`. It does not call Chrome, does not call the WeChat API, and
-does not parse user commands. Two capability modules use it for two different things:
-`browser/screenshot_service.py` calls it on every capture with
-`key = "{user_id or target_name}/tab_{tab}"` (audit trail for outgoing screenshots), and
-`workflow/wechat_image_reply.py` calls it with `key = "{FromUserName}"` (archive of incoming
-photos WeChat users send to the bot).
+does not parse user commands. Two capability modules use it for two different things, both
+landing under one folder per channel: `browser/screenshot_service.py` calls it *twice* per
+capture — `key = "channel_{team_id}/original"` for the pre-watermark bytes and
+`key = "channel_{team_id}/watermarked"` for the exact bytes sent to WeChat, so either version can
+be recovered later — and `workflow/wechat_image_reply.py` calls it once with
+`key = "channel_{joined_channel_id or 'unassigned'}"` (archive of incoming photos WeChat users
+send to the bot — see `workflow/README.md` → "Channels and photo capture" for how the joined
+channel is tracked).
 
 See `src/screenshot_bot/screenshot_store/README.md` for the module contract.
 
@@ -100,7 +116,8 @@ See `src/screenshot_bot/screenshot_store/README.md` for the module contract.
 
 `wechat/official_api.py` owns WeChat Official Account API calls for access token, temporary media upload/download (`cgi-bin/media/get`), and customer-service image send.
 
-`wechat/image_sender.py` exposes a stable image-send API for workflows.
+`wechat/image_sender.py` exposes a stable image-send *and* text-send (`send_text`) API for
+workflows, both sharing the same access-token-refresh-and-retry-once behavior.
 
 `wechat/media_downloader.py` exposes a stable incoming-media-download API for workflows, with the
 same retry-once-on-invalid-token behavior as `image_sender.py`.
@@ -113,9 +130,21 @@ See `src/screenshot_bot/wechat/README.md` for the module contract.
 
 `workflow/wechat_image_reply.py` is the dispatcher for the current use case:
 
-- text `1`, `2`, `3`, ... captures the matching `browser_targets` Chrome DevTools target (several
-  team_ids may share one physical multi-tab target — see "Browser Capability" above), passing
-  the sender's `FromUserName` through as `user_id` for capture audit storage.
+- a bare `帮助`/`help` sends `workflow/help_text.py`'s `GENERAL_HELP_TEXT` via `send_text` and
+  never reaches anything else below.
+- text matching `workflow/watermark_commands.py`'s `水印`/`watermark` grammar is handled
+  entirely as a settings command (parse -> mutate `browser/watermark_settings.py` -> text reply
+  via `wechat/image_sender.py`'s `send_text`) and never reaches the capture dispatch below.
+  Stateless by design: each message is one complete command, there is no per-user multi-step
+  conversation to track.
+- text `1`, `2`, `3`, ... joins that channel (persisted via `workflow/user_team_tracker.py`'s
+  `UserTeamTracker`) *and* immediately captures its matching `browser_targets` Chrome DevTools
+  target (several team_ids may share one physical multi-tab target — see "Browser Capability"
+  above), passing the sender's `FromUserName` through as `user_id` for capture audit storage.
+- an `image` message with no channel digit of its own is resolved via `UserTeamTracker` instead:
+  a sender with a previously joined channel gets that channel re-captured and sent back (no need
+  to resend the digit); a sender with none gets `CHANNEL_UNASSIGNED_PROMPT` as a text reply
+  instead of reaching the capture dispatch. The photo itself is archived either way.
 - if `virtual_desktop.enabled` is true, configured desktop numbers capture that desktop.
 - message types listed in `capture_message_types` capture a desktop screenshot.
 - non-capture text returns a generated `latency_test` image.

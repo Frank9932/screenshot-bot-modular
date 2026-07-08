@@ -8,6 +8,8 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from screenshot_bot.runtime.console_log import log_line
+
 from .devtools_client import DevToolsWebSocket, http_json
 
 
@@ -272,7 +274,7 @@ class CdpMultiTabService:
                 try:
                     self.keep_alive(name, **keep_alive_kwargs)
                 except Exception as error:
-                    print(f"keep_alive({name}) failed: {error}")
+                    log_line("browser", f"keep_alive({name}) failed: {error}")
 
         thread = threading.Thread(target=_loop, daemon=True)
         self._keep_alive_threads[name] = (thread, stop_event)
@@ -313,7 +315,7 @@ class CdpMultiTabService:
                 try:
                     self.refresh(name, **refresh_kwargs)
                 except Exception as error:
-                    print(f"refresh({name}) failed: {error}")
+                    log_line("browser", f"refresh({name}) failed: {error}")
 
         thread = threading.Thread(target=_loop, daemon=True)
         self._refresh_threads[name] = (thread, stop_event)
