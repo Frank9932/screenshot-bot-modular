@@ -4,6 +4,10 @@ bot_install_python: true
 python_winget_id: Python.Python.3.12
 python_installer_url: https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
 
+bot_install_cloudflared: true
+cloudflared_winget_id: Cloudflare.cloudflared
+cloudflared_download_url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+
 create_startup_task: false
 
 bot_config:
@@ -92,9 +96,9 @@ bot_config:
     enabled: true
     fields:
       - label: "Test Area"
-        value: "EE-SCRB-RYG1A"
+        value: ""
       - label: "Test Item"
-        value: "Burn-in-test"
+        value: ""
     lines: []
     include_timestamp: true
     timestamp_label: "Capture Time"
@@ -105,7 +109,7 @@ bot_config:
     font_size: 36
     text_color: "#FFFFFF"
     background_color: "#000000"
-    background_opacity: 190
+    background_opacity: 100
     padding: 18
     margin_left: 70
     margin_bottom: 70

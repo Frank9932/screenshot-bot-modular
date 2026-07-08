@@ -26,6 +26,10 @@
       ansible.builtin.import_tasks: tasks/python.yml
       tags: python
 
+    - name: Ensure cloudflared is available for the optional quick tunnel
+      ansible.builtin.import_tasks: tasks/cloudflared.yml
+      tags: cloudflared
+
     - name: Deploy local secrets
       ansible.builtin.import_tasks: tasks/secrets.yml
       tags: secrets

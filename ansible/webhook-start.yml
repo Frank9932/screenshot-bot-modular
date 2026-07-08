@@ -15,10 +15,19 @@
         $stdoutLog = "{{ bot_install_dir }}\logs\webhook-task.log"
         $script = "{{ bot_install_dir }}\scripts\Start-WebhookBackground.ps1"
 
+        # Built as its own variable, then interpolated below, rather than embedding the
+        # WarmupTeams value directly inline in the heredoc: PowerShell can silently drop an
+        # empty-string argument when handing a command line to a native executable (the nested
+        # powershell.exe invocation this heredoc builds), leaving the flag with nothing after it.
+        # Omitting the flag entirely when there is nothing to pass avoids that instead of relying
+        # on an empty string surviving.
+        $warmupTeams = "{{ bot_warmup_teams | default('') }}"
+        $warmupArg = if ($warmupTeams) { " -WarmupTeams `"$warmupTeams`"" } else { "" }
+
         @"
         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
         Set-Location -LiteralPath "{{ bot_install_dir }}"
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$script" -ConfigPath "{{ bot_install_dir }}\config.json" *> "$stdoutLog"
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$script" -ConfigPath "{{ bot_install_dir }}\config.json"$warmupArg *> "$stdoutLog"
         exit `$LASTEXITCODE
         "@ | Set-Content -LiteralPath $runner -Encoding ASCII
 

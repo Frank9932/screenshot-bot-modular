@@ -1,5 +1,9 @@
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config.json"),
+    # Comma-separated team ids to proactively warm up at startup (e.g. "1,2"). Empty means all
+    # configured teams (unchanged default behavior) -- an unlisted team still works fine on its
+    # first real request, it just isn't opened ahead of time.
+    [string]$WarmupTeams = ""
 )
 
 Set-StrictMode -Version 2.0
@@ -87,6 +91,13 @@ $serverArgs = @(
     "--path", $path,
     "--ready-file", $readyFile
 )
+# Only add this when non-empty: PowerShell can silently drop an empty-string argument when
+# handing an argument list to a native executable (python.exe here, via Start-Process), leaving
+# the flag with nothing after it -- omitting the flag entirely is the reliable way to mean "no
+# filter" instead of passing "" through.
+if (![string]::IsNullOrWhiteSpace($WarmupTeams)) {
+    $serverArgs += @("--warmup-teams", $WarmupTeams)
+}
 $serverProcess = Start-Process -FilePath $python -ArgumentList $serverArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
 
 $deadline = [DateTime]::UtcNow.AddSeconds(10)

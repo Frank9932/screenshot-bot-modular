@@ -29,3 +29,20 @@ class WeChatImageSender:
         upload = self.client.upload_temporary_image(token, image_path)
         send_result = self.client.send_customer_image(token, touser, upload["media_id"])
         return upload, send_result
+
+    def send_text(self, touser, content):
+        if not touser:
+            raise RuntimeError("touser missing: FromUserName is empty")
+        started = time.perf_counter()
+        try:
+            send_result = self._send_text(touser, content, force_refresh=False)
+        except AccessTokenInvalidError:
+            send_result = self._send_text(touser, content, force_refresh=True)
+        return {
+            "send_response": send_result,
+            "send_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+
+    def _send_text(self, touser, content, force_refresh):
+        token = self.client.get_access_token(force_refresh=force_refresh)
+        return self.client.send_customer_text(token, touser, content)

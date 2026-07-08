@@ -9,8 +9,13 @@ per target.
 - `BrowserScreenshotService(config_path)`
 - `BrowserScreenshotService.parse_team_id(text)`
 - `BrowserScreenshotService.capture(team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15)`
-- `BrowserScreenshotService.warm_up()` — open/log into every configured target up front (see
-  "Startup warm-up")
+- `BrowserScreenshotService.warm_up(team_ids=None)` — open/log into every configured team's own
+  tab up front, or just the given `team_ids` (see "Startup warm-up")
+- `BrowserScreenshotService.describe_watermark(team_id)` / `.set_watermark_field(team_id, field_index, value)` /
+  `.set_watermark_opacity(team_id, opacity)` / `.reset_watermark(team_id)` — read/mutate one
+  team's watermark override (see "Per-team watermark customization" below)
+- `TeamWatermarkSettingsStore(path)` — the underlying per-team override store; `BrowserScreenshotService`
+  owns one instance internally (`.watermark_settings`)
 - `BrowserProfileManager.tab_count(target)` — how many tabs a target declares (`tab_count`, default 1)
 - `BrowserTargetConfig(config_path, config=None)`
 - `CdpMultiTabService(port, host="127.0.0.1", max_tabs=None)` — the underlying shared-Chrome,
@@ -29,6 +34,8 @@ per target.
   physical multi-tab site by giving them identical `name`/`start_url`/`app_url`/`tab_count`/
   `login` and only varying `tab` — see "Team-per-tab targets" below, which is the production
   pattern (e.g. WeChat team numbers `1`-`5` each pinned to one tab of one login-gated site).
+  Also `watermark_settings_path` (default `runtime/watermark-team-settings.json`) — where
+  per-team watermark overrides persist, see "Per-team watermark customization" below.
 - Text command such as `1`, `2`, `3`
 - Optional `tab` index override (0-based, must be `< tab_count`); if omitted, `capture()` uses
   the requested team_id's own configured `tab` (default 0)
@@ -37,11 +44,12 @@ per target.
 - Optional output directory and image file name
 
 ## Output
-- PNG file path in `published_path` (watermarked, for the WeChat reply) and `store_path` (raw
-  bytes, filed under `screenshot_store` for audit)
-- Audit storage is organized `{user_id}/tab_{tab}/...` when a `user_id` was passed (so one
-  requester's capture history is easy to find regardless of which team_id/tab they used),
-  falling back to `{target_name}/tab_{tab}/...` when no `user_id` is given (e.g. tooling/scripts)
+- PNG file path in `published_path` (watermarked, for the WeChat reply), plus two permanent
+  audit copies: `store_path` (pre-watermark bytes) and `watermarked_store_path` (the exact bytes
+  sent to WeChat), both filed under `screenshot_store`
+- Audit storage is organized `channel_{team_id}/original/...` and `channel_{team_id}/watermarked/...`
+  — everyone's captures for one channel land in that channel's two sub-folders, distinguished by
+  the timestamp already in each capture's filename (no per-user or per-tab sub-folders)
 - Capture metadata including target id, tab index, requester id, shared DevTools port, page
   title, page URL, capture time, and watermark data
 
@@ -70,7 +78,7 @@ from screenshot_bot.browser import BrowserScreenshotService
 
 svc = BrowserScreenshotService('config.example.json')
 info = svc.capture('1', user_id='oWeChatUser123', output_dir='screenshots')
-print(info['published_path'], info['store_path'])
+print(info['published_path'], info['store_path'], info['watermarked_store_path'])
 ```
 
 ## Login-gated targets (production config)
@@ -220,34 +228,54 @@ caller doesn't pass one explicitly, so a WeChat user texting `"3"` transparently
 Each tab gets its own Chrome DevTools tab, named `<target_name>` (tab 0) or
 `<target_name>_tab<N>` (tab N), and its own raw-capture history via `ScreenshotStore`:
 `published_path`/`raw_path` still land in the usual flat `output_dir`/`raw_dir` (unchanged, for
-the WeChat reply), but every capture is additionally saved to
-`{store_dir}/{user_id or target_name}/tab_{tab}/{timestamp}_{duration}ms.png` (returned as
-`store_path`) — organized by requester first when a `user_id` was passed (e.g. the WeChat
-`FromUserName`), falling back to `target_name` otherwise.
+the WeChat reply), but every capture is additionally saved *twice* — once pre-watermark to
+`{store_dir}/channel_{team_id}/original/{timestamp}_{duration}ms.png` (returned as `store_path`),
+once post-watermark to `{store_dir}/channel_{team_id}/watermarked/{timestamp}_{duration}ms.png`
+(returned as `watermarked_store_path`) — regardless of who requested it or which tab it resolved to.
 
 Verified end-to-end (against a local mock of the login-gated site, since the real
 `10.121.0.14` isn't reachable from every environment): 5 different simulated WeChat users each
 capturing a different team_id (`"1"`-`"5"`) triggers exactly one real login (not five) and
-stores each capture under its own `{user_id}/tab_{N}/...` directory; `keep_alive`/`auto_refresh`
-keep firing in the background for as long as the owning process stays up; and a simulated
-process restart (fresh `BrowserScreenshotService`, same running Chrome) adopts all 5 existing
-tabs with no duplicates and no repeated login.
+stores each capture under its own `channel_{team_id}/{original,watermarked}/...` directories;
+`keep_alive`/`auto_refresh` keep firing in the background for as long as the owning process
+stays up; and a simulated process restart (fresh `BrowserScreenshotService`, same running
+Chrome) adopts all 5 existing tabs with no duplicates and no repeated login.
 
 ### Startup warm-up
 
-`warm_up()` opens (and logs into) every configured target before the first real request, in a
-background thread right after the webhook process starts (see
-`scripts/run_wechat_official_webhook.py`). When several `team_id`s share one target `name` (the
-pattern above), `warm_up()` only actually opens/logs into that physical target *once* — the
-first `team_id` it reaches — and every other `team_id` sharing that name gets the same result
-in its return value, instead of each of the 5 entries independently replaying the full
-`range(tab_count)` login sequence back-to-back. Without this, a slow first login (still
-mid-navigation) would get hit by 4 more concurrent `login()` attempts on the very same tab a few
-milliseconds later, which is what produced cascading `connection aborted`/`tab not debuggable`
-errors during testing before this was fixed. One target's failure (e.g. a missing login env
-var) is recorded per-team_id and skipped rather than aborting the rest — `ensure_tab()` retries
-that target's login on the next `capture()` or `warm_up()` call since a failed login is never
-marked as applied (see `BrowserProfileManager.ensure_tab`).
+`warm_up(team_ids=None)` opens (and logs into) every *requested* team's own tab before the first
+real request, in a background thread right after the webhook process starts (see
+`scripts/run_wechat_official_webhook.py`). `team_ids` limits which teams get proactively opened —
+omit it (the default, used at webhook startup) to warm up every configured team; pass e.g.
+`["3"]` to warm up just that one. An unlisted team isn't broken by being skipped — `capture()`'s
+own `ensure_tab()` call opens/logs into it lazily on its first real request either way.
+
+Crucially, warming up team `"3"` opens **only** team 3's own pinned tab, not every tab of
+whatever physical target it shares with other teams. Earlier versions of this method looped
+`range(tab_count)` for the first team_id reached per shared target name, which happened to work
+by accident when warming up *all* teams (every tab needed to open eventually anyway) but silently
+opened every other sharing team's tab too the moment scoping was introduced — asking to warm up
+just team 3 would still open teams 1/2/4/5's tabs as a side effect, since they all declare the
+same `tab_count`. `warm_up()` now groups by target name and opens exactly the set of tab indices
+the *requested* teams actually own (`target["tab"]`), so warming up team "3" alone opens exactly
+one tab. Warming up every team still behaves exactly as before (all tabs of a shared target open
+once, not once per team_id) since that case naturally includes every team's own tab index.
+
+One caveat this creates: only tab index 0 of a shared target ever actually logs in (see "Team-
+per-tab targets" above) — every other tab just reuses that session. If you warm up (or capture)
+a non-zero-tab team *before* tab 0 has ever been opened for that target (e.g. `-Teams "2,3"`
+without also including whichever team owns `"tab": 0`), those tabs will load unauthenticated,
+since no session exists yet for them to reuse. Include the tab-0 team in the scope (or let a
+normal, unscoped warm-up/first request establish it first) to avoid this.
+
+When several `team_id`s share one target `name`, only that physical target's session is
+established once — not once per team_id sharing it — since a slow first login (still
+mid-navigation) getting hit by concurrent `login()` attempts on the very same tab a few
+milliseconds later is what produced cascading `connection aborted`/`tab not debuggable` errors
+during testing before this was fixed. One team's failure (e.g. a missing login env var) is
+recorded per-team_id and skipped rather than aborting the rest — `ensure_tab()` retries that
+team's login on the next `capture()` or `warm_up()` call since a failed login is never marked as
+applied (see `BrowserProfileManager.ensure_tab`).
 
 ### No extra default tab
 
@@ -259,6 +287,33 @@ configured tabs (e.g. 5 for one `tab_count: 5` group), no stray blank tab alongs
 Implemented via `CdpMultiTabService.close_untracked_tabs()` — closes every page the service
 hasn't itself opened/adopted, meaningful only right after a fresh launch before anything else
 has been added.
+
+## Per-team watermark customization
+
+A team's watermark (field text, background opacity) can be overridden independently of every
+other team, without touching `config.json`. Overrides are keyed by `team_id`, persisted as one
+small JSON file (`browser_targets.watermark_settings_path`, default
+`runtime/watermark-team-settings.json`), and merged onto the global `watermark` config *only for
+that team's own capture* — `resolve_watermark_config(base_config, overrides)` returns a new dict,
+never mutating the shared base config or another team's result. A field's *label* is never
+overridden, only its *value* — so a team customizes what a row says without needing to retype
+the label.
+
+`capture()` looks up `team_id`'s overrides on every call; if none exist it reuses the one shared
+`WatermarkRenderer` instance built at startup (zero extra cost for the common case). If overrides
+exist, it builds a fresh `WatermarkRenderer` for just that capture — cheap, since the renderer is
+a stateless wrapper around a config dict (the font is loaded fresh on every `apply()` call
+regardless of caller).
+
+These are driven by WeChat chat commands parsed in
+`workflow/watermark_commands.py` (see the root `README.md` → "Watermark customization" for the
+command grammar); `BrowserScreenshotService.describe_watermark`/`set_watermark_field`/
+`set_watermark_opacity`/`reset_watermark` are what the workflow layer calls in response.
+`set_watermark_opacity` raises `ValueError` outside `0`-`255`; `set_watermark_field` raises
+`IndexError` for a field index the team doesn't have. An empty string is a valid value —
+`set_watermark_field(team_id, index, "")` clears that field's content while keeping its label —
+and the two example fields (`Test Area`, `Test Item`) default to empty in `config.example.json`
+and `ansible/group_vars/*.yml`.
 
 ## CdpMultiTabService
 
