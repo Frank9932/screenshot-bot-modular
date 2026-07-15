@@ -96,12 +96,15 @@ scripts\Bot.ps1 webhook restart      # clean stop + start + print browser warm_u
 scripts\Bot.ps1 browser restart      # kill Chrome too, then restart the webhook (fresh Chrome + re-login)
 scripts\Bot.ps1 browser warmup       # retry login for every target WITHOUT restarting anything
 scripts\Bot.ps1 tunnel start
+scripts\Bot.ps1 all kill             # stop webhook + kill Chrome + stop tunnel, nothing left running
+scripts\Bot.ps1 all restart          # kill everything above, then start webhook + tunnel fresh
 ```
 
 ```bash
 # remotely, via ansible
 ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=status"
 ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=browser bot_action=restart"
+ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=all bot_action=restart"
 ```
 
 `webhook restart` (Python process only) intentionally does **not** kill Chrome — a process
@@ -110,7 +113,10 @@ an authenticated session. If Chrome itself is the thing that's stuck (not just t
 process), use `browser restart` instead, which kills Chrome first. `browser warmup` is the
 non-disruptive option: it retries login for every target in a one-off process that safely
 shares the already-running Chrome (via `adopt_tab`), without touching the live webhook process
-at all — useful right after fixing a credential.
+at all — useful right after fixing a credential. `all kill`/`all restart` go one step further
+than `browser restart` and also stop/restart the optional public tunnel, for when the whole
+stack (not just webhook+Chrome) needs a clean slate — each underlying stop step already
+tolerates "nothing running", so `all kill` is safe to run any time, not just as a recovery step.
 
 The commands below are the individual playbooks `Bot.ps1`/`bot.yml` wrap; use them directly if
 you want one specific step rather than the combined command:
@@ -155,6 +161,26 @@ If the host already has a named Cloudflare tunnel configured (a `config.yml` und
 isolates itself from it by overriding `USERPROFILE` for just that process — otherwise cloudflared
 picks up that config's credentials and evaluates every request against *that* tunnel's ingress
 rules, which don't know about our new quick-tunnel hostname and 404 everything.
+
+### Permanent tunnel
+
+For production ingress that shouldn't need re-pasting a URL after every restart, install
+cloudflared as a Windows service bound to a named Cloudflare Tunnel (token from Zero Trust →
+Networks → Tunnels → your tunnel → install command):
+
+```bash
+ansible-playbook -i ansible/inventory.yml ansible/tunnel-permanent-install.yml --limit <host> -e "bot_tunnel_token=eyJhIjoi..."
+# or, via the generic wrapper:
+ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=tunnel bot_action=permanent-install bot_tunnel_token=eyJhIjoi..."
+```
+
+Unlike the quick tunnel above, this installs cloudflared as a Windows service (`Cloudflared`,
+Automatic startup) — it survives reboots and keeps a stable hostname, because the routing
+(which public hostname maps to `http://127.0.0.1:<port>`) lives in the Cloudflare Zero Trust
+dashboard, not in a local config file. Add or change the Public Hostname route for that tunnel in
+the dashboard, matching the webhook's actual port. Re-running `tunnel-permanent-install.yml` with
+a different token replaces whatever tunnel was previously installed on that host
+(uninstall-then-install), so it's safe to call again to switch a host to a different tunnel.
 
 ## Notes
 

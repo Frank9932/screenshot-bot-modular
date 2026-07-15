@@ -67,14 +67,6 @@ caller passes a `user_id`, e.g. the WeChat `FromUserName`), then watermarks the 
 
 See `src/screenshot_bot/browser/README.md` for the module contract.
 
-## Desktop Capability
-
-`desktop/screenshot_tool.py` wraps `ScreenshotTool.exe` and returns desktop screenshot metadata.
-
-`desktop/virtual_desktop.py` optionally switches Windows virtual desktops and manages its local state/lock files.
-
-See `src/screenshot_bot/desktop/README.md` for the module contract.
-
 ## Runtime Utility Capability
 
 `runtime/dedupe.py` provides TTL message dedupe.
@@ -98,13 +90,13 @@ See `src/screenshot_bot/runtime/README.md` for the module contract.
 `storage/screenshots/{key}/YYYYMMDD_HHMMSS_mmm_{duration_ms}ms.png` under a caller-chosen key,
 and returns a `ScreenshotRecord`. It does not call Chrome, does not call the WeChat API, and
 does not parse user commands. Two capability modules use it for two different things, both
-landing under one folder per channel: `browser/screenshot_service.py` calls it *twice* per
-capture — `key = "channel_{team_id}/original"` for the pre-watermark bytes and
-`key = "channel_{team_id}/watermarked"` for the exact bytes sent to WeChat, so either version can
-be recovered later — and `workflow/wechat_image_reply.py` calls it once with
-`key = "channel_{joined_channel_id or 'unassigned'}"` (archive of incoming photos WeChat users
-send to the bot — see `workflow/README.md` → "Channels and photo capture" for how the joined
-channel is tracked).
+landing under one folder per sender (channel nested inside it): `browser/screenshot_service.py`
+calls it *twice* per capture — `key = "{user_id}/channel_{team_id}/original"` for the
+pre-watermark bytes and `key = "{user_id}/channel_{team_id}/watermarked"` for the exact bytes
+sent to WeChat, so either version can be recovered later — and `workflow/wechat_image_reply.py`
+calls it once with `key = "{user_id}/channel_{joined_channel_id or 'unassigned'}"` (archive of
+incoming photos WeChat users send to the bot — see `workflow/README.md` → "Channels and photo
+capture" for how the joined channel is tracked).
 
 See `src/screenshot_bot/screenshot_store/README.md` for the module contract.
 
@@ -143,15 +135,17 @@ See `src/screenshot_bot/wechat/README.md` for the module contract.
   above), passing the sender's `FromUserName` through as `user_id` for capture audit storage.
 - an `image` message with no channel digit of its own is resolved via `UserTeamTracker` instead:
   a sender with a previously joined channel gets that channel re-captured and sent back (no need
-  to resend the digit); a sender with none gets `CHANNEL_UNASSIGNED_PROMPT` as a text reply
-  instead of reaching the capture dispatch. The photo itself is archived either way.
-- if `virtual_desktop.enabled` is true, configured desktop numbers capture that desktop.
-- message types listed in `capture_message_types` capture a desktop screenshot.
-- non-capture text returns a generated `latency_test` image.
+  to resend the digit); a sender with none gets `help_text.build_channel_guidance(UNASSIGNED, ...)`
+  as a text reply instead of reaching the capture dispatch. The photo itself is archived either way.
+- channels marked `"backup": true` in config work identically to any other channel, they're just
+  excluded from the help/guidance text's channel list.
+- unrecognized text (not a digit, not a watermark command, not the private-channel passcode)
+  returns `help_text.build_channel_guidance(...)` as a text reply.
 - capture failures return a generated `capture_error` image.
-- message types listed in `ignore_message_types`, default `image`, are ignored unless they also trigger capture.
+- message types listed in `ignore_message_types`, default `image`, are silently ignored when they
+  have no channel to capture for.
 - an incoming `image` message's photo is downloaded via `wechat/media_downloader.py` and saved
-  through `screenshot_store.ScreenshotStore` under `{incoming_image_dir}/{FromUserName}/...`
+  through `screenshot_store.ScreenshotStore` under `{incoming_image_dir}/{FromUserName}/channel_{id}/...`
   (default `storage/incoming`), regardless of whether that message also triggers a capture reply.
   A download/save failure is recorded but does not block the reply.
 - duplicate WeChat deliveries are dropped by `MsgId` dedupe in the webhook layer.

@@ -12,6 +12,16 @@ from screenshot_bot.wechat.xml_message import message_dedupe_key, parse_xml_mess
 
 
 class WeChatWebhookServer(ThreadingHTTPServer):
+    # http.server.HTTPServer sets allow_reuse_address = 1. On Windows this doesn't just permit
+    # rebinding a socket stuck in TIME_WAIT (the POSIX use case) -- it lets a second process bind
+    # the exact same port while a prior instance is still actively listening, with no error at
+    # all. That silent coexistence is what let every uncoordinated restart (a manual console run,
+    # a stray scheduled task, an ansible retry) leave an orphan process alive undetected, each
+    # with its own independent Chrome tab bookkeeping racing the other -- the actual root cause
+    # behind repeated "tab not debuggable" incidents. Disabling reuse makes a port collision fail
+    # loudly at startup instead of silently producing a split-brain.
+    allow_reuse_address = False
+
     def __init__(self, address, webhook_path, token, message_processor, ready_payload=None, log_path=None, dedupe_ttl_seconds=600):
         super().__init__(address, WeChatWebhookHandler)
         self.webhook_path = webhook_path

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from screenshot_bot.browser import BrowserScreenshotService
 from screenshot_bot.config import get_section, load_json_config, resolve_path
-from screenshot_bot.desktop import DesktopScreenshotService, VirtualDesktopSwitcher, parse_desktop_number
 from screenshot_bot.runtime.clock import utc_now_iso
 from screenshot_bot.runtime.latency_image import write_latency_image
 from screenshot_bot.screenshot_store import ScreenshotStore
@@ -12,8 +11,18 @@ from screenshot_bot.wechat.image_sender import WeChatImageSender
 from screenshot_bot.wechat.media_downloader import WeChatMediaDownloader
 from screenshot_bot.wechat.webhook_server import WeChatWebhookServer
 
-from .help_text import CHANNEL_UNASSIGNED_PROMPT, GENERAL_HELP_TEXT, GENERAL_HELP_WORDS
-from .user_team_tracker import UNASSIGNED, UserTeamTracker
+from .help_text import (
+    FIRST_JOIN_STORAGE_NOTICE,
+    GENERAL_HELP_WORDS,
+    PRIVATE_CHANNEL_JOINED_TEXT,
+    PRIVATE_CHANNEL_PASSCODE,
+    PRIVATE_CHANNEL_SAVED_TEXT,
+    PRIVATE_CHANNEL_UNLOCKED_TEXT,
+    PRIVATE_CHANNEL_WORDS,
+    build_channel_guidance,
+    build_general_help_text,
+)
+from .user_team_tracker import PRIVATE_CHANNEL_ID, UNASSIGNED, UserTeamTracker
 from .watermark_commands import HELP_TEXT as WATERMARK_HELP_TEXT
 from .watermark_commands import parse_watermark_command
 
@@ -24,11 +33,10 @@ class WeChatImageReplyWorkflow:
         config_path,
         image_sender,
         browser,
-        desktop,
-        virtual_desktop,
         screenshot_dir,
         media_downloader,
         incoming_image_store,
+        private_image_store=None,
     ):
         self.config_path = config_path
         self.config = load_json_config(config_path)
@@ -36,25 +44,19 @@ class WeChatImageReplyWorkflow:
         self.screenshot_dir = Path(screenshot_dir)
         self.image_sender = image_sender
         self.browser = browser
-        self.desktop = desktop
-        self.virtual_desktop = virtual_desktop
         self.media_downloader = media_downloader
         self.incoming_image_store = incoming_image_store
+        self.private_image_store = private_image_store or incoming_image_store
         self.user_team_tracker = UserTeamTracker(
             resolve_path(config_path, self.webhook_config.get("user_team_tracker_path"), "runtime/user-team-tracker.json")
         )
-        self.virtual_desktop_config = get_section(self.config, "virtual_desktop")
-        self.capture_message_types = _parse_type_set(self.webhook_config.get("capture_message_types", "none"))
         self.ignore_message_types = _parse_type_set(self.webhook_config.get("ignore_message_types", "image"), keep_disabled_words=True)
         self.capture_timeout_seconds = int(self.webhook_config.get("capture_timeout_seconds", 15))
-
 
     def ready_payload(self):
         return {
             "browser_targets_enabled": bool(self.browser.targets.enabled),
             "browser_target_ids": sorted(self.browser.targets.targets.keys()),
-            "virtual_desktop_enabled": self.virtual_desktop.enabled,
-            "capture_message_types": sorted(self.capture_message_types),
             "ignore_message_types": sorted(self.ignore_message_types),
         }
 
@@ -80,12 +82,53 @@ class WeChatImageReplyWorkflow:
             if content.strip().lower() in GENERAL_HELP_WORDS:
                 if not touser:
                     raise RuntimeError("touser missing: FromUserName is empty")
-                send_info = self.image_sender.send_text(touser, GENERAL_HELP_TEXT)
+                reply_text = build_general_help_text(self.browser.targets.visible_targets.keys())
+                send_info = self.image_sender.send_text(touser, reply_text)
                 result.update(
                     {
                         "ok": True,
-                        "reply_text": GENERAL_HELP_TEXT,
+                        "reply_text": reply_text,
                         "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
+
+            if content.strip() == PRIVATE_CHANNEL_PASSCODE:
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                self.user_team_tracker.unlock_private(touser)
+                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_UNLOCKED_TEXT)
+                result.update(
+                    {
+                        "ok": True,
+                        "reply_text": PRIVATE_CHANNEL_UNLOCKED_TEXT,
+                        "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
+
+            # "私密"/"private" is otherwise inert -- it only means anything for a sender who has
+            # already unlocked it with the passcode above. An un-unlocked sender falls straight
+            # through to the guidance reply below, exactly like any other unrecognized text, so
+            # the private channel stays undiscoverable without the passcode.
+            if content.strip().lower() in PRIVATE_CHANNEL_WORDS and self.user_team_tracker.has_unlocked_private(touser):
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                self.user_team_tracker.set_team(touser, PRIVATE_CHANNEL_ID)
+                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_JOINED_TEXT)
+                result.update(
+                    {
+                        "ok": True,
+                        "reply_text": PRIVATE_CHANNEL_JOINED_TEXT,
+                        "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
                         "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
                     }
                 )
@@ -103,6 +146,8 @@ class WeChatImageReplyWorkflow:
                         "watermark_command": watermark_command,
                         "reply_text": reply_text,
                         "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
                         "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
                     }
                 )
@@ -110,24 +155,63 @@ class WeChatImageReplyWorkflow:
 
         if msg_type == "image":
             self._store_incoming_image(message, touser, result)
-            # A photo carries no channel of its own -- if this sender has never picked a
-            # channel (no prior digit message), there is nothing to capture for them yet.
-            # Nudge them instead of silently archiving the photo with no reply at all.
-            if self.user_team_tracker.get_team(touser) == UNASSIGNED:
+            channel_id = self.user_team_tracker.get_team(touser)
+            # The private channel only archives what the sender uploads -- there is no
+            # browser_targets entry backing it, so it must return here instead of falling
+            # through to _build_response_image, which would try (and fail) to capture it.
+            if channel_id == PRIVATE_CHANNEL_ID:
                 if not touser:
                     raise RuntimeError("touser missing: FromUserName is empty")
-                send_info = self.image_sender.send_text(touser, CHANNEL_UNASSIGNED_PROMPT)
+                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_SAVED_TEXT)
                 result.update(
                     {
                         "ok": True,
-                        "reply_text": CHANNEL_UNASSIGNED_PROMPT,
+                        "reply_text": PRIVATE_CHANNEL_SAVED_TEXT,
                         "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
+                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                    }
+                )
+                return result
+            # A photo carries no channel of its own -- if this sender has never picked a
+            # channel (no prior digit message), there is nothing to capture for them yet.
+            # Nudge them instead of silently archiving the photo with no reply at all.
+            if channel_id == UNASSIGNED:
+                if not touser:
+                    raise RuntimeError("touser missing: FromUserName is empty")
+                reply_text = build_channel_guidance(UNASSIGNED, self.browser.targets.visible_targets.keys())
+                send_info = self.image_sender.send_text(touser, reply_text)
+                result.update(
+                    {
+                        "ok": True,
+                        "reply_text": reply_text,
+                        "send_response": send_info.get("send_response", {}),
+                        "token_ms": send_info.get("token_ms", 0.0),
+                        "send_ms": send_info.get("send_ms", 0.0),
                         "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
                     }
                 )
                 return result
 
         image_result = self._build_response_image(message, result)
+        if image_result.get("trigger_kind") == "guidance":
+            if not touser:
+                raise RuntimeError("touser missing: FromUserName is empty")
+            reply_text = image_result["reply_text"]
+            send_info = self.image_sender.send_text(touser, reply_text)
+            result.update(
+                {
+                    "ok": True,
+                    "trigger_kind": "guidance",
+                    "reply_text": reply_text,
+                    "send_response": send_info.get("send_response", {}),
+                    "token_ms": send_info.get("token_ms", 0.0),
+                    "send_ms": send_info.get("send_ms", 0.0),
+                    "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+                }
+            )
+            return result
         if image_result.get("ignored"):
             result.update({"ok": True, "ignored": True, "reason": image_result.get("reason", "ignored")})
             return result
@@ -144,7 +228,7 @@ class WeChatImageReplyWorkflow:
                 "response_image_kind": image_result["response_image_kind"],
             }
         )
-        for key in ["browser_team_id", "requested_desktop", "desktop_switch", "capture_error", "capture_info"]:
+        for key in ["browser_team_id", "capture_error", "capture_info"]:
             if image_result.get(key) not in [None, {}, ""]:
                 result[key] = image_result[key]
 
@@ -155,10 +239,16 @@ class WeChatImageReplyWorkflow:
             {
                 "message_send_done": utc_now_iso(),
                 "send_response": send_result,
+                "token_ms": send_info.get("token_ms", 0.0),
+                "upload_ms": send_info.get("upload_ms", 0.0),
+                "send_ms": send_info.get("send_ms", 0.0),
                 "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
                 "ok": True,
             }
         )
+        if image_result.get("first_join_notice"):
+            notice_send_info = self.image_sender.send_text(touser, FIRST_JOIN_STORAGE_NOTICE)
+            result["first_join_notice_send_response"] = notice_send_info.get("send_response", {})
         return result
 
     def _handle_watermark_command(self, command):
@@ -216,12 +306,17 @@ class WeChatImageReplyWorkflow:
         try:
             image_bytes = self.media_downloader.download(media_id)
             duration_ms = round((time.perf_counter() - started) * 1000.0)
-            # A photo carries no channel of its own -- file it under whichever channel this
-            # sender most recently joined with a text digit, so incoming photos land in the
-            # same one-folder-per-channel layout as outgoing screenshots (see UserTeamTracker).
             channel_id = self.user_team_tracker.get_team(touser)
-            store_key = f"channel_{channel_id}"
-            record = self.incoming_image_store.save_screenshot(store_key, image_bytes, duration_ms)
+            if channel_id == PRIVATE_CHANNEL_ID:
+                # Private channel: still one folder per sender, just not under a channel_N parent.
+                record = self.private_image_store.save_screenshot(touser, image_bytes, duration_ms)
+            else:
+                # A photo carries no channel of its own -- file it under whichever channel this
+                # sender most recently joined with a text digit, under that sender's own
+                # top-level subfolder, matching the same {user_id}/channel_{id} layout outgoing
+                # screenshots use (see UserTeamTracker and BrowserScreenshotService.capture).
+                store_key = f"{touser}/channel_{channel_id}"
+                record = self.incoming_image_store.save_screenshot(store_key, image_bytes, duration_ms)
             result["incoming_image_path"] = str(record.file_path)
             result["incoming_image_size"] = record.size_bytes
         except Exception as exc:
@@ -234,110 +329,68 @@ class WeChatImageReplyWorkflow:
         touser = message.get("FromUserName", "")
         message_text = content if msg_type == "text" else f"<{msg_type}>"
         browser_team_id = self.browser.parse_team_id(message_text) if msg_type == "text" else None
+        first_join_notice = False
         if msg_type == "text" and browser_team_id is not None:
             # Sending a channel digit both captures immediately (unchanged) and joins that
-            # channel -- this is the only place channel membership is ever set.
+            # channel -- this is the only place channel membership is ever set. If this is the
+            # sender's very first channel (they were UNASSIGNED before), a follow-up text notice
+            # tells them their images are archived per-user -- see FIRST_JOIN_STORAGE_NOTICE.
+            first_join_notice = self.user_team_tracker.get_team(touser) == UNASSIGNED
             self.user_team_tracker.set_team(touser, browser_team_id)
         if msg_type == "image":
             # A photo has no channel of its own -- capture whichever channel this sender last
             # joined. handle() already returned early (before reaching here) if they've never
             # joined one, so this is always a real channel by this point.
             browser_team_id = self.user_team_tracker.get_team(touser)
-        desktop_number = None
-        if msg_type == "text" and browser_team_id is None and self.virtual_desktop.enabled:
-            desktop_number = parse_desktop_number(message_text, self.virtual_desktop_config)
 
         details["browser_team_id"] = browser_team_id
-        details["requested_desktop"] = desktop_number
 
-        if msg_type in self.ignore_message_types and not should_capture_message(msg_type, desktop_number, browser_team_id, self.capture_message_types):
-            return {"ignored": True, "reason": "message_type_disabled"}
+        if browser_team_id is None:
+            if msg_type in self.ignore_message_types:
+                return {"ignored": True, "reason": "message_type_disabled"}
+            # Nothing above recognized this as a command or capture trigger. A generic
+            # placeholder screenshot is meaningless to an actual end user -- tell them what to
+            # do instead, tailored to whether they've already joined a channel.
+            return {
+                "trigger_kind": "guidance",
+                "reply_text": build_channel_guidance(
+                    self.user_team_tracker.get_team(touser), self.browser.targets.visible_targets.keys()
+                ),
+            }
 
-        if browser_team_id is not None:
-            name_prefix = f"channel{browser_team_id}"
-        elif desktop_number is not None:
-            name_prefix = f"desktop{desktop_number}"
-        else:
-            name_prefix = "wechat-official"
+        name_prefix = f"channel{browser_team_id}"
         image_name = f"{name_prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
         image_path = self.screenshot_dir / image_name
         details["capture_started_at"] = utc_now_iso()
 
-        if should_capture_message(msg_type, desktop_number, browser_team_id, self.capture_message_types):
-            try:
-                if browser_team_id is not None:
-                    capture_info = self.browser.capture(
-                        browser_team_id,
-                        user_id=touser,
-                        output_dir=self.screenshot_dir,
-                        image_name=image_name,
-                        timeout_seconds=self.capture_timeout_seconds,
-                    )
-                    return {
-                        "trigger_kind": "browser_target",
-                        "response_image_kind": "browser_screenshot",
-                        "browser_team_id": browser_team_id,
-                        "image_path": capture_info["published_path"],
-                        "capture_ms": float(capture_info.get("capture_ms", 0.0)),
-                        "capture_info": capture_info,
-                    }
-                if desktop_number is not None:
-                    with self.virtual_desktop.exclusive_session():
-                        desktop_info = self.virtual_desktop.switch_to(desktop_number)
-                        capture_info = self.desktop.capture(
-                            output_dir=self.screenshot_dir,
-                            image_name=image_name,
-                            timeout_seconds=self.capture_timeout_seconds,
-                        )
-                    return {
-                        "trigger_kind": "virtual_desktop",
-                        "response_image_kind": "desktop_screenshot",
-                        "requested_desktop": desktop_number,
-                        "desktop_switch": desktop_info,
-                        "image_path": capture_info["published_path"],
-                        "capture_ms": float(capture_info.get("capture_ms", 0.0)),
-                        "capture_info": capture_info,
-                    }
-                capture_info = self.desktop.capture(
-                    output_dir=self.screenshot_dir,
-                    image_name=image_name,
-                    timeout_seconds=self.capture_timeout_seconds,
-                )
-                return {
-                    "trigger_kind": "message_type",
-                    "response_image_kind": "desktop_screenshot",
-                    "image_path": capture_info["published_path"],
-                    "capture_ms": float(capture_info.get("capture_ms", 0.0)),
-                    "capture_info": capture_info,
-                }
-            except Exception as exc:
-                details["capture_error"] = str(exc)
-                write_latency_image(image_path, details)
-                return {
-                    "trigger_kind": "capture_error",
-                    "response_image_kind": "capture_error",
-                    "image_path": str(image_path),
-                    "capture_ms": 0.0,
-                    "capture_error": str(exc),
-                    "capture_info": {},
-                }
-
-        write_latency_image(image_path, details)
-        return {
-            "trigger_kind": "latency_test",
-            "response_image_kind": "latency_test",
-            "image_path": str(image_path),
-            "capture_ms": 0.0,
-            "capture_info": {},
-        }
-
-
-def should_capture_message(message_type, desktop_number, browser_team_id, capture_message_types):
-    if browser_team_id is not None:
-        return True
-    if desktop_number is not None:
-        return True
-    return message_type in capture_message_types
+        try:
+            capture_info = self.browser.capture(
+                browser_team_id,
+                user_id=touser,
+                output_dir=self.screenshot_dir,
+                image_name=image_name,
+                timeout_seconds=self.capture_timeout_seconds,
+            )
+            return {
+                "trigger_kind": "browser_target",
+                "response_image_kind": "browser_screenshot",
+                "browser_team_id": browser_team_id,
+                "image_path": capture_info["published_path"],
+                "capture_ms": float(capture_info.get("capture_ms", 0.0)),
+                "capture_info": capture_info,
+                "first_join_notice": first_join_notice,
+            }
+        except Exception as exc:
+            details["capture_error"] = str(exc)
+            write_latency_image(image_path, details)
+            return {
+                "trigger_kind": "capture_error",
+                "response_image_kind": "capture_error",
+                "image_path": str(image_path),
+                "capture_ms": 0.0,
+                "capture_error": str(exc),
+                "capture_info": {},
+            }
 
 
 def _parse_type_set(value, keep_disabled_words=False):
@@ -351,7 +404,6 @@ def _parse_type_set(value, keep_disabled_words=False):
             continue
         result.add(normalized)
     return result
-
 
 
 def build_wechat_official_server(config_path, host, port, path):
@@ -374,25 +426,21 @@ def build_wechat_official_server(config_path, host, port, path):
     screenshot_dir = resolve_path(config_path, webhook.get("screenshot_dir"), "screenshots")
     log_path = resolve_path(config_path, webhook.get("log_path"), "logs/wechat-official-webhook-events.jsonl")
     incoming_image_dir = resolve_path(config_path, webhook.get("incoming_image_dir"), "storage/incoming")
+    private_channel_config = get_section(webhook, "private_channel")
+    private_image_dir = resolve_path(config_path, private_channel_config.get("save_dir"), "storage/private")
     image_sender = WeChatImageSender(appid, appsecret)
     media_downloader = WeChatMediaDownloader(client=image_sender.client)
     incoming_image_store = ScreenshotStore(base_dir=incoming_image_dir)
+    private_image_store = ScreenshotStore(base_dir=private_image_dir)
     browser = BrowserScreenshotService(config_path)
-    desktop = DesktopScreenshotService(
-        config_path,
-        webhook.get("screenshot_tool", "ScreenshotTool.exe"),
-        webhook.get("screenshot_dir", "screenshots"),
-    )
-    virtual_desktop = VirtualDesktopSwitcher(get_section(config, "virtual_desktop"), base_dir=Path(config_path).resolve().parent)
     workflow = WeChatImageReplyWorkflow(
         config_path,
         image_sender,
         browser,
-        desktop,
-        virtual_desktop,
         screenshot_dir,
         media_downloader,
         incoming_image_store,
+        private_image_store,
     )
     return WeChatWebhookServer(
         (host, port),

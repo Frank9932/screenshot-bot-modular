@@ -1,0 +1,31 @@
+---
+# Installs cloudflared as a Windows service bound to a named Cloudflare Tunnel (token from Zero
+# Trust -> Networks -> Tunnels -> your tunnel -> install command). Unlike tunnel-start.yml's
+# throwaway quick tunnel, this survives reboots and keeps a stable hostname, since routing lives
+# in Cloudflare's dashboard rather than a local config file. Re-running with a new token replaces
+# whatever tunnel was previously installed on this host.
+#
+#   ansible-playbook -i inventory.yml tunnel-permanent-install.yml --limit <host> -e "bot_tunnel_token=eyJhIjoi..."
+- name: Install a permanent Cloudflare tunnel service for the Screenshot Bot Modular webhook
+  hosts: screenshot_bot_modular
+  gather_facts: false
+
+  tasks:
+    - name: Validate bot_tunnel_token was provided
+      ansible.builtin.assert:
+        that:
+          - bot_tunnel_token is defined
+          - bot_tunnel_token | length > 0
+        fail_msg: >-
+          Pass -e "bot_tunnel_token=<token>" (from Cloudflare Zero Trust -> Networks -> Tunnels
+          -> your tunnel -> install command).
+
+    - name: Install permanent tunnel service
+      ansible.windows.win_shell: |
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Bot.ps1" tunnel permanent-install -TunnelToken "{{ bot_tunnel_token }}"
+      register: tunnel_install
+      changed_when: true
+
+    - name: Print install result
+      ansible.builtin.debug:
+        var: tunnel_install.stdout

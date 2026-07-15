@@ -100,11 +100,14 @@ class BrowserScreenshotService:
         page = next((t for t in self.profile_manager.service.list_tabs() if t["name"] == tab_name), {})
 
         target_name = str(target.get("name", team_id))
-        # Two sub-folders per channel -- "original" (pre-watermark bytes, archived here) and
-        # "watermarked" (the exact bytes sent to WeChat, archived below once rendered) -- so
-        # either version can be recovered later without re-deriving one from the other.
+        # {user_id}/channel_{id}/{original,watermarked} -- everything for one sender lives
+        # under their own top-level folder, with channel as a subfolder inside it, matching the
+        # same {user_id}/channel_{id} layout incoming photos use (see wechat_image_reply.py's
+        # _store_incoming_image). Falls back to "unknown" for callers that don't pass a user_id
+        # (e.g. audit/demo scripts), so a capture never gets filed with an empty path segment.
+        store_user_key = user_id or "unknown"
         store_record = self.store.save_screenshot(
-            f"channel_{team_id}/original", capture_result["bytes"], duration_ms=round(capture_ms)
+            f"{store_user_key}/channel_{team_id}/original", capture_result["bytes"], duration_ms=round(capture_ms)
         )
 
         watermark_started = time.perf_counter()
@@ -129,7 +132,7 @@ class BrowserScreenshotService:
         watermark_info = watermark.apply(raw_path, final_path, dynamic)
         watermark_ms = (time.perf_counter() - watermark_started) * 1000.0
         watermarked_store_record = self.store.save_screenshot(
-            f"channel_{team_id}/watermarked", final_path.read_bytes(), duration_ms=round(capture_ms)
+            f"{store_user_key}/channel_{team_id}/watermarked", final_path.read_bytes(), duration_ms=round(capture_ms)
         )
         return {
             "source": "chrome_devtools",

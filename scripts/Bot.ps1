@@ -33,6 +33,14 @@ param(
     # limits which teams get proactively re-warmed afterward.
     [string]$Teams = "",
 
+    # Cloudflare named-tunnel token for "tunnel permanent-install" (from the Zero Trust
+    # dashboard -> Networks -> Tunnels -> your tunnel -> install command). Installs cloudflared
+    # as a Windows service bound to that tunnel -- unlike "tunnel start" (a throwaway quick
+    # tunnel with a random URL that dies with the process), this survives reboots and keeps a
+    # stable hostname, since the routing lives in Cloudflare's dashboard rather than a local
+    # config file.
+    [string]$TunnelToken = "",
+
     [Alias("h", "?")]
     [switch]$Help
 )
@@ -53,7 +61,8 @@ $script:Commands = [ordered]@{
     status  = @{ Actions = @(); Description = "Show webhook, tunnel, and Chrome status in one shot" }
     webhook = @{ Actions = @("start", "stop", "restart", "status", "logs"); Description = "Manage the WeChat webhook process" }
     browser = @{ Actions = @("restart", "warmup"); Description = "Manage the shared Chrome browser/tabs" }
-    tunnel  = @{ Actions = @("start", "stop", "status"); Description = "Manage the optional public quick tunnel" }
+    tunnel  = @{ Actions = @("start", "stop", "status", "permanent-install"); Description = "Manage the public tunnel (throwaway quick tunnel, or a permanent named-tunnel service)" }
+    all     = @{ Actions = @("kill", "restart"); Description = "Manage webhook + Chrome + tunnel together" }
 }
 
 function Show-Help {
@@ -69,8 +78,10 @@ COMMANDS
                                  actions: start | stop | restart | status | logs
     browser <action>           Manage the shared Chrome browser/tabs
                                  actions: restart | warmup
-    tunnel <action>            Manage the optional public quick tunnel
-                                 actions: start | stop | status
+    tunnel <action>            Manage the public tunnel
+                                 actions: start | stop | status | permanent-install
+    all <action>               Manage webhook + Chrome + tunnel together
+                                 actions: kill | restart
     help                       Show this help (also: -h, --help, -?, or no arguments)
 
 OPTIONS
@@ -84,6 +95,11 @@ OPTIONS
                                  kill step of "browser restart"/"webhook restart" -- that always
                                  stops the one shared webhook/Chrome process for every team,
                                  since there is only one Chrome process for all of them.
+    -TunnelToken <token>       Cloudflare named-tunnel token for "tunnel permanent-install"
+                                 (Zero Trust -> Networks -> Tunnels -> your tunnel -> install
+                                 command). Installs cloudflared as a Windows service bound to
+                                 that tunnel -- survives reboots and keeps a stable hostname,
+                                 unlike "tunnel start"'s throwaway quick tunnel.
 
 EXAMPLES
     scripts\Bot.ps1 status
@@ -92,6 +108,9 @@ EXAMPLES
     scripts\Bot.ps1 browser restart
     scripts\Bot.ps1 browser warmup -Teams "1,2"
     scripts\Bot.ps1 tunnel start
+    scripts\Bot.ps1 tunnel permanent-install -TunnelToken "eyJhIjoi..."
+    scripts\Bot.ps1 all kill
+    scripts\Bot.ps1 all restart
 "@
 }
 
@@ -180,6 +199,31 @@ function Invoke-WebhookLogs {
     }
 }
 
+function Get-ChromeDebugPort {
+    $debugPort = 9221
+    try {
+        $config = Read-JsonFile $ConfigPath
+        $browserTargets = Get-JsonValue $config "browser_targets" $null
+        $debugPort = [int](Get-JsonValue $browserTargets "debug_port" 9221)
+    } catch {
+    }
+    return $debugPort
+}
+
+function Wait-ForChromeDebugPortRelease {
+    # Wait for the debug port to actually release rather than a blind sleep -- starting a fresh
+    # Chrome while the old one is still mid-shutdown (or its debug port still momentarily
+    # responsive) is exactly the race that produces intermittent "tab not debuggable" errors.
+    param([int]$DebugPort, [int]$TimeoutSeconds = 15)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $stillUp = $false
+        try { Invoke-RestMethod -Uri "http://127.0.0.1:$DebugPort/json/version" -TimeoutSec 1 | Out-Null; $stillUp = $true } catch { $stillUp = $false }
+        if (-not $stillUp) { break }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 function Invoke-BrowserRestart {
     # Restarting only the webhook process adopts whatever Chrome is already running (by design,
     # so a crashed/redeployed process doesn't lose an authenticated session). If Chrome itself is
@@ -194,23 +238,7 @@ function Invoke-BrowserRestart {
     }
     Write-Output "Killing Chrome..."
     Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Wait for the debug port to actually release rather than a blind sleep -- starting a fresh
-    # Chrome while the old one is still mid-shutdown (or its debug port still momentarily
-    # responsive) is exactly the race that produces intermittent "tab not debuggable" errors.
-    $debugPort = 9221
-    try {
-        $config = Read-JsonFile $ConfigPath
-        $browserTargets = Get-JsonValue $config "browser_targets" $null
-        $debugPort = [int](Get-JsonValue $browserTargets "debug_port" 9221)
-    } catch {
-    }
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-Date) -lt $deadline) {
-        $stillUp = $false
-        try { Invoke-RestMethod -Uri "http://127.0.0.1:$debugPort/json/version" -TimeoutSec 1 | Out-Null; $stillUp = $true } catch { $stillUp = $false }
-        if (-not $stillUp) { break }
-        Start-Sleep -Milliseconds 500
-    }
+    Wait-ForChromeDebugPortRelease -DebugPort (Get-ChromeDebugPort)
     Write-Output "Starting webhook (launches a fresh Chrome + full warm_up)..."
     Invoke-WebhookStart
     Write-Output "Waiting for browser warm_up..."
@@ -251,6 +279,44 @@ function Invoke-TunnelStart {
     & (Join-Path $PSScriptRoot "Start-PublicTunnel.ps1") -ConfigPath $ConfigPath
 }
 
+function Resolve-Cloudflared {
+    $command = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($null -ne $command) { return $command.Source }
+    $candidates = @(
+        "C:\Program Files (x86)\cloudflared\cloudflared.exe",
+        "C:\Program Files\cloudflared\cloudflared.exe",
+        (Join-Path $root "runtime\cloudflared\cloudflared.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    throw "cloudflared.exe not found. Run ansible deploy.yml first (installs it), or pass its path explicitly."
+}
+
+function Invoke-TunnelPermanentInstall {
+    # Installs cloudflared as a Windows service bound to a named tunnel (token from the
+    # Cloudflare Zero Trust dashboard) -- unlike "tunnel start"'s throwaway quick tunnel, this
+    # survives reboots, starts automatically, and keeps a stable hostname, since routing lives
+    # in Cloudflare's dashboard rather than a local config file. Re-running with a new token
+    # replaces whatever tunnel was previously installed (uninstall-then-install), so this is
+    # safe to call again if you need to point this host at a different tunnel.
+    if ([string]::IsNullOrWhiteSpace($TunnelToken)) {
+        throw "tunnel permanent-install requires -TunnelToken <token> (from Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> install command)"
+    }
+    $cloudflared = Resolve-Cloudflared
+    $existing = Get-Service -Name Cloudflared -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        Write-Output "Uninstalling existing permanent tunnel service..."
+        & $cloudflared service uninstall 2>&1 | Out-String | Write-Output
+        Start-Sleep -Seconds 2
+    }
+    Write-Output "Installing permanent tunnel service..."
+    & $cloudflared service install $TunnelToken 2>&1 | Out-String | Write-Output
+    Start-Sleep -Seconds 2
+    Get-Service -Name Cloudflared -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType | Format-Table -AutoSize | Out-String | Write-Output
+    Write-Output "Route a Public Hostname to http://127.0.0.1:<webhook_port> for this tunnel in the Zero Trust dashboard if you haven't already."
+}
+
 function Invoke-TunnelStop {
     & (Join-Path $PSScriptRoot "Stop-PublicTunnel.ps1")
 }
@@ -263,6 +329,36 @@ function Invoke-TunnelStatus {
         $running = $null -ne (Get-Process -Id ([int]$state.pid) -ErrorAction SilentlyContinue)
     }
     [pscustomobject]@{ state = $state; process_running = $running }
+}
+
+function Invoke-AllKill {
+    # Stops every moving part this bot runs (webhook, Chrome, tunnel) regardless of which of
+    # them is actually up -- each underlying stop script/kill step already tolerates "nothing
+    # running", so this is safe to run any time, not just as a recovery step after a stuck state.
+    Write-Output "Stopping webhook..."
+    Invoke-WebhookStop
+    Write-Output "Killing Chrome..."
+    Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Write-Output "Stopping tunnel..."
+    Invoke-TunnelStop
+}
+
+function Invoke-AllRestart {
+    Invoke-AllKill
+    Wait-ForChromeDebugPortRelease -DebugPort (Get-ChromeDebugPort)
+    Write-Output "Starting webhook (launches a fresh Chrome + full warm_up)..."
+    Invoke-WebhookStart
+    Write-Output "Waiting for browser warm_up..."
+    $outLog = Join-Path $runtimeDir "wechat-official-webhook-server.out.log"
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        $content = Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue
+        if ($content -match "browser_warm_up") { break }
+        Start-Sleep -Seconds 2
+    }
+    Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue
+    Write-Output "Starting tunnel..."
+    Invoke-TunnelStart
 }
 
 function Format-Timestamp {
@@ -298,7 +394,10 @@ function Invoke-OverallStatus {
     $webhook = Invoke-WebhookStatus
     $tunnel = Invoke-TunnelStatus
     $chromeCount = (Get-Process chrome -ErrorAction SilentlyContinue | Measure-Object).Count
-    $trackedPid = $webhook.state.webhook_pid
+    # $webhook.state/.ready are $null after a full "all kill" (their JSON files get deleted along
+    # with the process) -- go through Get-JsonValue everywhere below instead of dotting straight
+    # into them, since Set-StrictMode throws on a property/method access against $null.
+    $trackedPid = Get-JsonValue $webhook.state "webhook_pid" $null
     $pids = @($webhook.process_ids)
     $healthy = ($null -ne $webhook.local_health) -and $webhook.local_health.ok
     $port = Get-WebhookPort
@@ -325,11 +424,14 @@ function Invoke-OverallStatus {
     } else {
         Write-Warning "nothing is listening on port $port."
     }
-    Write-Output ("  started      : {0} (uptime {1})" -f (Format-Timestamp $webhook.state.started_at), (Format-Uptime $webhook.state.started_at))
-    $webhookUrl = "$($webhook.state.local_url.TrimEnd('/'))/$($webhook.state.webhook_path.TrimStart('/'))"
+    $startedAt = Get-JsonValue $webhook.state "started_at" ""
+    Write-Output ("  started      : {0} (uptime {1})" -f (Format-Timestamp $startedAt), (Format-Uptime $startedAt))
+    $localUrl = Get-JsonValue $webhook.state "local_url" ""
+    $webhookPath = Get-JsonValue $webhook.state "webhook_path" ""
+    $webhookUrl = if ($localUrl -and $webhookPath) { "$($localUrl.TrimEnd('/'))/$($webhookPath.TrimStart('/'))" } else { "n/a" }
     Write-Output ("  url          : {0}" -f $webhookUrl)
-    Write-Output ("  teams        : {0}" -f ($webhook.ready.browser_target_ids -join ", "))
-    Write-Output ("  secrets      : token={0} appid={1} appsecret={2}" -f $webhook.ready.has_token, $webhook.ready.has_appid, $webhook.ready.has_appsecret)
+    Write-Output ("  teams        : {0}" -f ((Get-JsonValue $webhook.ready "browser_target_ids" @()) -join ", "))
+    Write-Output ("  secrets      : token={0} appid={1} appsecret={2}" -f (Get-JsonValue $webhook.ready "has_token" $false), (Get-JsonValue $webhook.ready "has_appid" $false), (Get-JsonValue $webhook.ready "has_appsecret" $false))
 
     Write-Output ""
     Write-Output "=== Tunnel ==="
@@ -370,7 +472,15 @@ switch ($Command) {
             "start" { Invoke-TunnelStart }
             "stop" { Invoke-TunnelStop }
             "status" { Invoke-TunnelStatus | ConvertTo-Json -Depth 8 }
-            default { throw "tunnel requires an action: start|stop|status" }
+            "permanent-install" { Invoke-TunnelPermanentInstall }
+            default { throw "tunnel requires an action: start|stop|status|permanent-install" }
+        }
+    }
+    "all" {
+        switch ($Action) {
+            "kill" { Invoke-AllKill }
+            "restart" { Invoke-AllRestart }
+            default { throw "all requires an action: kill|restart" }
         }
     }
 }

@@ -234,31 +234,60 @@ class CdpMultiTabService:
 
     def keep_alive(self, name, fetch_url="./json/POST", csrf_selector="#csrf", command=None, timeout_seconds=10):
         """Send one authenticated JSON-RPC ping, replicating the request shape the app's own
-        session watchdog uses (see useWatchDog() in the WebStation bundle, chunk 9855.js): a POST
-        to the app's JSON endpoint with the CSRF token read from the page's own hidden #csrf
-        input, and the session cookie riding along via credentials: 'same-origin'. Any
-        authenticated request resets the server's idle timer — this keeps the session alive even
-        on a tab that never renders enough UI to trigger the app's own polling."""
-        command = command or {"command": "GetServersInfo"}
+        session watchdog uses (see useWatchDog() in the WebStation bundle, chunk 9855.js):
+        PeekObjects on the app's own current server path -- the same command and the same path
+        (read from the page's own URL hash, which is exactly what the bundle's
+        PathHelper.getCurrentServerPath() resolves to) the real watchdog uses, verified against
+        the live server to return the same {"PeekObjectsRes": [...]} shape it gets. An earlier
+        version of this sent a GetServersInfo ping instead (a guess, since PeekObjects needs a
+        valid path and this method had no way to discover one) — that guess returned a plain
+        HTTP 200 forever, including for hours after the session had actually died server-side,
+        because a 200 status alone does not mean the server treated the request as real
+        activity.
+
+        Raises if the server reports the session as already logged out. This server signals
+        that with HTTP 200 and a body containing "...LOGGED_OUT..." (e.g.
+        `{"ERROR_LOGGED_OUT": "LoggedOut", "ErrMsg": "CLIENT_HAVE_BEEN_LOGGED_OUT", ...}`) rather
+        than a 4xx status, so checking only the status code — as before — silently treated an
+        already-dead session as a successful ping. Raising here matters operationally too:
+        start_keep_alive's loop only logs an actual exception, never inspects a plain return
+        value, so a failure that doesn't raise is invisible in the logs no matter what it
+        returns."""
         page = self._get_page(name)
+        explicit_command_json = json.dumps(json.dumps(command)) if command is not None else "null"
         ping_script = f"""
             (async function() {{
                 var csrfEl = document.querySelector({json.dumps(csrf_selector)});
                 var token = csrfEl ? csrfEl.value : '';
+                var explicitCmd = {explicit_command_json};
+                var cmd;
+                if (explicitCmd) {{
+                    cmd = explicitCmd;
+                }} else {{
+                    var serverPath = decodeURIComponent(window.location.hash.replace(/^#/, ''));
+                    cmd = JSON.stringify({{command: 'PeekObjects', data: [serverPath || '/']}});
+                }}
                 var resp = await fetch({json.dumps(fetch_url)}, {{
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: {{'Content-Type': 'application/json', 'X-CSRF-Token': token}},
-                    body: {json.dumps(json.dumps(command))}
+                    body: cmd
                 }});
-                return resp.status;
+                var text = await resp.text();
+                return JSON.stringify({{status: resp.status, body: text}});
             }})()
         """
         with DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
             client.call("Runtime.enable")
             result = client.call("Runtime.evaluate", {"expression": ping_script, "awaitPromise": True})
-        status = result.get("result", {}).get("value")
-        return {"name": name, "status": status, "ok": status == 200}
+        value = result.get("result", {}).get("value")
+        parsed = json.loads(value) if value else {}
+        status = parsed.get("status")
+        body = str(parsed.get("body", ""))
+        logged_out = "LOGGED_OUT" in body
+        if status != 200 or logged_out:
+            raise RuntimeError(f"keep_alive ping rejected for {name} (status={status}, logged_out={logged_out}): {body[:200]}")
+        return {"name": name, "status": status, "ok": True}
 
     def start_keep_alive(self, name, interval_seconds=60, **keep_alive_kwargs):
         """Start a background thread that calls keep_alive(name, ...) every interval_seconds —
