@@ -85,6 +85,24 @@ class WeChatOfficialClient:
             raise RuntimeError("send message failed: " + json.dumps(result, ensure_ascii=False))
         return result
 
+    def create_menu(self, access_token, menu):
+        url = "https://api.weixin.qq.com/cgi-bin/menu/create?access_token=" + parse.quote(access_token)
+        result = http_json("POST", url, menu)
+        log_line("wechat", f"menu create response: {json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
+        _raise_for_invalid_token(result)
+        if result.get("errcode") not in [None, 0]:
+            raise RuntimeError("menu create failed: " + json.dumps(result, ensure_ascii=False))
+        return result
+
+    def get_menu(self, access_token):
+        url = "https://api.weixin.qq.com/cgi-bin/menu/get?access_token=" + parse.quote(access_token)
+        req = request.Request(url, method="GET")
+        with request.urlopen(req, timeout=20) as response:
+            text = response.read().decode("utf-8")
+        result = json.loads(text) if text else {}
+        _raise_for_invalid_token(result)
+        return result
+
     def download_media(self, access_token, media_id):
         url = (
             "https://api.weixin.qq.com/cgi-bin/media/get?access_token="

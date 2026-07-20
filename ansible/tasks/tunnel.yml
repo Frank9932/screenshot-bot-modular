@@ -1,0 +1,22 @@
+---
+# Installs the permanent tunnel (cloudflared as a Windows service, bound to a named Cloudflare
+# Tunnel) as part of the normal deploy flow, whenever a token is configured for this host --
+# treating the tunnel as infrastructure set up once at init, not something a bot restart cycles.
+# Only runs when bot_tunnel_token is set (per-host in inventory.yml/host_vars, or via -e); hosts
+# with no token configured skip this step entirely and keep whatever ingress they already use
+# (e.g. the throwaway quick tunnel, or an externally-managed tunnel).
+- name: Install permanent tunnel service
+  ansible.windows.win_shell: |
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Bot.ps1" tunnel permanent-install -TunnelToken "{{ bot_tunnel_token }}"
+  register: tunnel_install
+  changed_when: true
+  when:
+    - bot_tunnel_token is defined
+    - bot_tunnel_token | length > 0
+
+- name: Print permanent tunnel install result
+  ansible.builtin.debug:
+    var: tunnel_install.stdout
+  when:
+    - bot_tunnel_token is defined
+    - bot_tunnel_token | length > 0

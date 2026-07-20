@@ -12,3 +12,17 @@ ansible/inventory.yml
 ansible/group_vars/screenshot_bot_modular.yml
 ansible/files/secrets.local.ps1
 ansible/*.retry
+
+# Runtime-generated archive: WeChat user photos, screenshot audit copies, private
+# channel uploads. Never meant to be committed regardless of which host/config
+# writes to it.
+/storage/
+
+# Local-only runtime config (machine-specific paths, may drift from
+# config.example.json's schema); see config.example.json for the committed template.
+config.json
+
+# device-agent-mvp: unrelated standalone prototype (see docs/STABILIZATION_PLAN.md).
+# Its .env holds a real API key; its logs hold local query history.
+device-agent-mvp/.env
+device-agent-mvp/logs/

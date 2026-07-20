@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from screenshot_bot.runtime.console_log import log_line
 
 from .devtools_client import DevToolsWebSocket, http_json
+from .equipment_navigation import navigate_to_equipment_graphic
 
 
 def _http_put_json(url, timeout=5):
@@ -66,6 +67,16 @@ def launch_chrome(port, user_data_dir, chrome_path=None, headless=False, ignore_
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        # Only the foreground tab renders at full rate by default; every other team's tab sits
+        # occluded and Chrome throttles its compositor. The first Page.captureScreenshot call on
+        # a tab that's been sitting occluded has to wait for it to un-throttle and produce a
+        # fresh frame, which can take longer than capture_timeout_seconds -- every later call on
+        # the same (now recently-active) tab is fast. These flags keep every tab rendering at
+        # full rate regardless of occlusion/focus, so the first real capture isn't the one that
+        # pays this cost.
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
     ]
     if headless:
         args.append("--headless=new")
@@ -84,6 +95,26 @@ class CdpMultiTabService:
         self._tabs = {}
         self._keep_alive_threads = {}
         self._refresh_threads = {}
+        self._tab_locks = {}
+        self._tab_locks_guard = threading.Lock()
+
+    def _lock_for(self, name):
+        # Every CDP-issuing method below (screenshot/login/keep_alive/navigate/refresh/
+        # navigate_equipment) opens its own independent DevToolsWebSocket connection to the same
+        # tab, with nothing serializing them against each other -- keep_alive runs on its own
+        # background thread every keep_alive_interval_seconds, auto-refresh on another every
+        # refresh_interval_seconds, and a WeChat capture request can arrive on a third at any
+        # time. A scheduled Page.reload() (refresh) landing while a keep_alive ping or a login()
+        # fill/submit sequence is mid-flight tears down the page's JS execution context out from
+        # under it -- observed live: a tab wedged permanently (every subsequent login() call
+        # timing out on "login page did not become ready") starting within ~10s of that tab's
+        # first scheduled hourly refresh, and never recovered on its own. Serializing every
+        # operation on one tab through its own lock closes that race: at most one CDP operation
+        # touches a given tab's page/JS state at a time, so a reload can no longer land mid-ping.
+        with self._tab_locks_guard:
+            if name not in self._tab_locks:
+                self._tab_locks[name] = threading.Lock()
+            return self._tab_locks[name]
 
     def add_tab(self, name, url):
         if name in self._tabs:
@@ -147,7 +178,7 @@ class CdpMultiTabService:
     def screenshot(self, name, output_path=None, timeout_seconds=15):
         page = self._get_page(name)
         started = time.perf_counter()
-        with DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
             client.call("Page.enable")
             result = client.call("Page.captureScreenshot", {"format": "png", "fromSurface": True})
         elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -164,6 +195,18 @@ class CdpMultiTabService:
             "bytes": png_bytes,
         }
 
+    def navigate_equipment(self, name, path, pane_height="12%", settle_seconds=3.0, timeout_seconds=35):
+        """Route an already-open, already-logged-in tab to one equipment's graphic page via the
+        SPA's own hash routing (no full page navigation/re-login involved) and wait for it to
+        render -- see equipment_navigation.navigate_to_equipment_graphic for the actual sequence."""
+        page = self._get_page(name)
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+            client.call("Runtime.enable")
+            navigate_to_equipment_graphic(
+                client, path, pane_height=pane_height, settle_seconds=settle_seconds, timeout_seconds=timeout_seconds
+            )
+        return {"name": name, "path": path}
+
     def login(
         self,
         name,
@@ -179,7 +222,7 @@ class CdpMultiTabService:
         (this call is also safe to repeat on an already-authenticated tab: it detects the
         redirect away from the login page and returns immediately instead of timing out)."""
         page = self._get_page(name)
-        with DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
             client.call("Page.enable")
             client.call("Runtime.enable")
             # The static HTML ships placeholder form fields, but the app's SPA bootstrap tears
@@ -274,27 +317,47 @@ class CdpMultiTabService:
                     body: cmd
                 }});
                 var text = await resp.text();
-                return JSON.stringify({{status: resp.status, body: text}});
+                return JSON.stringify({{status: resp.status, body: text, url: location.href}});
             }})()
         """
-        with DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
             client.call("Runtime.enable")
             result = client.call("Runtime.evaluate", {"expression": ping_script, "awaitPromise": True})
         value = result.get("result", {}).get("value")
         parsed = json.loads(value) if value else {}
         status = parsed.get("status")
         body = str(parsed.get("body", ""))
-        logged_out = "LOGGED_OUT" in body
+        url = str(parsed.get("url", ""))
+        # A 6.5h live soak test (2026-07-17) found this LOGGED_OUT-in-body check alone isn't
+        # enough: once the tab has *already* fallen back to login.html (as opposed to catching
+        # the transition the moment it happens), this same ping can come back HTTP 200 with a
+        # body that doesn't contain "LOGGED_OUT" -- observed live, this let a dead session go
+        # undetected for ~47 minutes even though the tab was provably sitting on login.html the
+        # whole time (confirmed by an independent URL check outside this method), because
+        # keep_alive() itself kept reporting {"ok": True}. Checking the tab's own URL closes
+        # that gap directly, independent of whatever the response body happens to say.
+        on_login_page = "login.html" in url
+        logged_out = "LOGGED_OUT" in body or on_login_page
         if status != 200 or logged_out:
-            raise RuntimeError(f"keep_alive ping rejected for {name} (status={status}, logged_out={logged_out}): {body[:200]}")
+            raise RuntimeError(
+                f"keep_alive ping rejected for {name} (status={status}, logged_out={logged_out}, "
+                f"on_login_page={on_login_page}): {body[:200]}"
+            )
         return {"name": name, "status": status, "ok": True}
 
-    def start_keep_alive(self, name, interval_seconds=60, **keep_alive_kwargs):
+    def start_keep_alive(self, name, interval_seconds=60, on_failure=None, **keep_alive_kwargs):
         """Start a background thread that calls keep_alive(name, ...) every interval_seconds —
         matching the 60-second interval the app's own watchdog uses. Only one tab needs this
         running: all tabs in this Chrome process share the same session cookie, so a ping from
         any one of them keeps the whole session (and therefore every tab) alive. Returns a
-        threading.Event; call stop_keep_alive(name) to stop it."""
+        threading.Event; call stop_keep_alive(name) to stop it.
+
+        keep_alive() detects a dead session and raises, but a raised exception on its own does
+        not get the session back — without on_failure, the loop just logs the failure and goes
+        back to sleep, so every capture after the real death silently screenshots the login page
+        forever (ensure_tab() only calls login() the first time a tab name is seen). on_failure,
+        if given, is called with the exception so a caller that holds the credentials (e.g.
+        BrowserProfileManager) can re-authenticate and hand back a fresh cookie."""
         self.stop_keep_alive(name)
         stop_event = threading.Event()
 
@@ -304,6 +367,12 @@ class CdpMultiTabService:
                     self.keep_alive(name, **keep_alive_kwargs)
                 except Exception as error:
                     log_line("browser", f"keep_alive({name}) failed: {error}")
+                    if on_failure is None:
+                        continue
+                    try:
+                        on_failure(error)
+                    except Exception as recovery_error:
+                        log_line("browser", f"keep_alive({name}) recovery failed: {recovery_error}")
 
         thread = threading.Thread(target=_loop, daemon=True)
         self._keep_alive_threads[name] = (thread, stop_event)
@@ -318,6 +387,20 @@ class CdpMultiTabService:
         stop_event.set()
         thread.join(timeout=2)
 
+    def navigate(self, name, url, timeout_seconds=10):
+        """Force-navigate the tab to `url` via CDP Page.navigate(). Used before a recovery
+        login() attempt: a session that died server-side (idle timeout caught by keep_alive's
+        ping) doesn't necessarily redirect the tab's DOM to login.html on its own the way the
+        120-minute client-side auto-logout does, so _wait_for_login_page_state() could misread
+        the stale app DOM as 'already_authenticated' (its check for that state is just "URL is
+        not login.html"). Navigating to the login URL first guarantees a real, current read of
+        auth state instead of trusting whatever the tab happened to be showing."""
+        page = self._get_page(name)
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+            client.call("Page.enable")
+            client.call("Page.navigate", {"url": url})
+        return {"name": name, "url": url}
+
     def refresh(self, name, ignore_cache=False, timeout_seconds=10):
         """Reload the tab via CDP Page.reload(). Chrome throttles timers and network activity
         for hidden/background tabs, which can stall a page's own live-data subscriptions (e.g.
@@ -325,7 +408,7 @@ class CdpMultiTabService:
         Reloading forces a fresh render with current data before the next screenshot. Cookies
         survive a reload, so an authenticated tab stays authenticated after this call."""
         page = self._get_page(name)
-        with DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
+        with self._lock_for(name), DevToolsWebSocket(page["webSocketDebuggerUrl"], timeout=timeout_seconds) as client:
             client.call("Page.enable")
             client.call("Page.reload", {"ignoreCache": ignore_cache})
         return {"name": name}

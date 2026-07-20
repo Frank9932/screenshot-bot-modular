@@ -59,8 +59,9 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) { $ConfigPath = Join-Path $root "
 # Command -> allowed actions (empty array means the command takes no action).
 $script:Commands = [ordered]@{
     status  = @{ Actions = @(); Description = "Show webhook, tunnel, and Chrome status in one shot" }
-    webhook = @{ Actions = @("start", "stop", "restart", "status", "logs"); Description = "Manage the WeChat webhook process" }
+    webhook = @{ Actions = @("start", "stop", "restart", "status", "logs", "watch"); Description = "Manage the WeChat webhook process" }
     browser = @{ Actions = @("restart", "warmup"); Description = "Manage the shared Chrome browser/tabs" }
+    menu    = @{ Actions = @("set", "get"); Description = "Push or inspect the WeChat tap-to-command menu buttons" }
     tunnel  = @{ Actions = @("start", "stop", "status", "permanent-install"); Description = "Manage the public tunnel (throwaway quick tunnel, or a permanent named-tunnel service)" }
     all     = @{ Actions = @("kill", "restart"); Description = "Manage webhook + Chrome + tunnel together" }
 }
@@ -75,9 +76,11 @@ USAGE
 COMMANDS
     status                     Show webhook, tunnel, and Chrome status in one shot
     webhook <action>           Manage the WeChat webhook process
-                                 actions: start | stop | restart | status | logs
+                                 actions: start | stop | restart | status | logs | watch
     browser <action>           Manage the shared Chrome browser/tabs
                                  actions: restart | warmup
+    menu <action>              Push or inspect the WeChat tap-to-command menu buttons
+                                 actions: set | get
     tunnel <action>            Manage the public tunnel
                                  actions: start | stop | status | permanent-install
     all <action>               Manage webhook + Chrome + tunnel together
@@ -105,8 +108,11 @@ EXAMPLES
     scripts\Bot.ps1 status
     scripts\Bot.ps1 webhook restart
     scripts\Bot.ps1 webhook logs -Tail 200
+    scripts\Bot.ps1 webhook watch
     scripts\Bot.ps1 browser restart
     scripts\Bot.ps1 browser warmup -Teams "1,2"
+    scripts\Bot.ps1 menu set
+    scripts\Bot.ps1 menu get
     scripts\Bot.ps1 tunnel start
     scripts\Bot.ps1 tunnel permanent-install -TunnelToken "eyJhIjoi..."
     scripts\Bot.ps1 all kill
@@ -182,7 +188,7 @@ function Invoke-WebhookStart {
 }
 
 function Invoke-WebhookStop {
-    & (Join-Path $PSScriptRoot "Stop-WebhookBackground.ps1")
+    & (Join-Path $PSScriptRoot "Stop-WebhookBackground.ps1") -Port (Get-WebhookPort)
 }
 
 function Invoke-WebhookLogs {
@@ -194,9 +200,22 @@ function Invoke-WebhookLogs {
     )
     foreach ($path in $paths) {
         Write-Output "===== $path ====="
-        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail $Tail }
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail $Tail -Encoding UTF8 }
         else { Write-Output "MISSING" }
     }
+}
+
+function Invoke-WebhookWatch {
+    # Opens the live log watcher in its own new console window and returns immediately -- this
+    # process (and whatever called it, e.g. an ansible/WinRM session) is never blocked, and the
+    # watcher keeps running with its own visible output even after the parent terminal moves on
+    # or closes. -NoExit keeps that new window open if the watcher errors out immediately,
+    # instead of it just flashing shut with no chance to read why.
+    $watcherScript = Join-Path $PSScriptRoot "Watch-WebhookLog.ps1"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $watcherScript, "-ConfigPath", $ConfigPath
+    ) -WorkingDirectory $root
+    Write-Output "Log watcher opened in a new window."
 }
 
 function Get-ChromeDebugPort {
@@ -275,6 +294,19 @@ function Invoke-BrowserWarmup {
     & $python -c "import json; from screenshot_bot.browser import BrowserScreenshotService; svc = BrowserScreenshotService(r'$ConfigPath'); print(json.dumps(svc.warm_up(team_ids=$teamsArg), indent=2))"
 }
 
+function Invoke-Menu {
+    # Same secrets/PYTHONPATH setup as Invoke-BrowserWarmup -- a separate one-off python
+    # process, safe to run any time (only touches WeChat's menu API, never Chrome/webhook state).
+    param([string]$MenuAction)
+    Set-Location -LiteralPath $root
+    $secretsPath = Join-Path $root "secrets.local.ps1"
+    if (Test-Path -LiteralPath $secretsPath) { . $secretsPath }
+    $env:PYTHONPATH = Join-Path $root "src"
+    $python = Join-Path $root ".venv\Scripts\python.exe"
+    if (!(Test-Path -LiteralPath $python)) { $python = "python" }
+    & $python (Join-Path $root "scripts\run_wechat_menu_sync.py") $MenuAction --config-path $ConfigPath
+}
+
 function Invoke-TunnelStart {
     & (Join-Path $PSScriptRoot "Start-PublicTunnel.ps1") -ConfigPath $ConfigPath
 }
@@ -304,15 +336,26 @@ function Invoke-TunnelPermanentInstall {
         throw "tunnel permanent-install requires -TunnelToken <token> (from Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> install command)"
     }
     $cloudflared = Resolve-Cloudflared
-    $existing = Get-Service -Name Cloudflared -ErrorAction SilentlyContinue
-    if ($null -ne $existing) {
-        Write-Output "Uninstalling existing permanent tunnel service..."
-        & $cloudflared service uninstall 2>&1 | Out-String | Write-Output
+    # cloudflared logs its own INFO-level lines to stderr as a matter of course (not an error
+    # signal) -- under this script's global $ErrorActionPreference = "Stop", redirecting that
+    # stderr into the pipeline (2>&1) wraps each line as a terminating ErrorRecord and aborts the
+    # whole script even though cloudflared itself succeeds. Relax to "Continue" just around these
+    # two calls so its routine stderr chatter is displayed, not treated as fatal.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $existing = Get-Service -Name Cloudflared -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            Write-Output "Uninstalling existing permanent tunnel service..."
+            & $cloudflared service uninstall 2>&1 | ForEach-Object { Write-Output $_.ToString() }
+            Start-Sleep -Seconds 2
+        }
+        Write-Output "Installing permanent tunnel service..."
+        & $cloudflared service install $TunnelToken 2>&1 | ForEach-Object { Write-Output $_.ToString() }
         Start-Sleep -Seconds 2
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
-    Write-Output "Installing permanent tunnel service..."
-    & $cloudflared service install $TunnelToken 2>&1 | Out-String | Write-Output
-    Start-Sleep -Seconds 2
     Get-Service -Name Cloudflared -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType | Format-Table -AutoSize | Out-String | Write-Output
     Write-Output "Route a Public Hostname to http://127.0.0.1:<webhook_port> for this tunnel in the Zero Trust dashboard if you haven't already."
 }
@@ -328,19 +371,24 @@ function Invoke-TunnelStatus {
     if ($null -ne $state -and $null -ne $state.pid) {
         $running = $null -ne (Get-Process -Id ([int]$state.pid) -ErrorAction SilentlyContinue)
     }
-    [pscustomobject]@{ state = $state; process_running = $running }
+    $permanentService = Get-Service -Name Cloudflared -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+        state = $state
+        process_running = $running
+        permanent_service_status = if ($null -ne $permanentService) { $permanentService.Status.ToString() } else { $null }
+    }
 }
 
 function Invoke-AllKill {
-    # Stops every moving part this bot runs (webhook, Chrome, tunnel) regardless of which of
-    # them is actually up -- each underlying stop script/kill step already tolerates "nothing
-    # running", so this is safe to run any time, not just as a recovery step after a stuck state.
+    # Stops the webhook + Chrome. Does NOT touch the tunnel (quick or permanent) -- the tunnel
+    # is managed independently as infrastructure (see "tunnel permanent-install"/"tunnel
+    # start"/"tunnel stop"), since a bot restart has no reason to cycle ingress. Each underlying
+    # stop step already tolerates "nothing running", so this is safe to run any time, not just
+    # as a recovery step after a stuck state.
     Write-Output "Stopping webhook..."
     Invoke-WebhookStop
     Write-Output "Killing Chrome..."
     Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Write-Output "Stopping tunnel..."
-    Invoke-TunnelStop
 }
 
 function Invoke-AllRestart {
@@ -357,8 +405,6 @@ function Invoke-AllRestart {
         Start-Sleep -Seconds 2
     }
     Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue
-    Write-Output "Starting tunnel..."
-    Invoke-TunnelStart
 }
 
 function Format-Timestamp {
@@ -435,12 +481,17 @@ function Invoke-OverallStatus {
 
     Write-Output ""
     Write-Output "=== Tunnel ==="
-    if ($tunnel.process_running -and $null -ne $tunnel.state) {
-        Write-Output "  status       : running"
-        Write-Output ("  url          : {0}" -f $tunnel.state.tunnel_url)
-        Write-Output ("  started      : {0} (uptime {1})" -f (Format-Timestamp $tunnel.state.started_at), (Format-Uptime $tunnel.state.started_at))
+    if ($null -ne $tunnel.permanent_service_status) {
+        Write-Output ("  permanent    : {0} (Cloudflared service)" -f $tunnel.permanent_service_status)
     } else {
-        Write-Output "  status       : not running"
+        Write-Output "  permanent    : not installed"
+    }
+    if ($tunnel.process_running -and $null -ne $tunnel.state) {
+        Write-Output "  quick tunnel : running"
+        Write-Output ("    url        : {0}" -f $tunnel.state.tunnel_url)
+        Write-Output ("    started    : {0} (uptime {1})" -f (Format-Timestamp $tunnel.state.started_at), (Format-Uptime $tunnel.state.started_at))
+    } else {
+        Write-Output "  quick tunnel : not running"
     }
 
     Write-Output ""
@@ -457,7 +508,8 @@ switch ($Command) {
             "restart" { Invoke-WebhookStop; Invoke-WebhookStart }
             "status" { Invoke-WebhookStatus | ConvertTo-Json -Depth 8 }
             "logs" { Invoke-WebhookLogs }
-            default { throw "webhook requires an action: start|stop|restart|status|logs" }
+            "watch" { Invoke-WebhookWatch }
+            default { throw "webhook requires an action: start|stop|restart|status|logs|watch" }
         }
     }
     "browser" {
@@ -465,6 +517,13 @@ switch ($Command) {
             "restart" { Invoke-BrowserRestart }
             "warmup" { Invoke-BrowserWarmup }
             default { throw "browser requires an action: restart|warmup" }
+        }
+    }
+    "menu" {
+        switch ($Action) {
+            "set" { Invoke-Menu -MenuAction "set" }
+            "get" { Invoke-Menu -MenuAction "get" }
+            default { throw "menu requires an action: set|get" }
         }
     }
     "tunnel" {

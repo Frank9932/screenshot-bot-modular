@@ -77,7 +77,18 @@ class BrowserScreenshotService:
                 results[team_id] = entry
         return results
 
-    def capture(self, team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15):
+    def capture(
+        self,
+        team_id,
+        tab=None,
+        user_id=None,
+        output_dir=None,
+        image_name=None,
+        timeout_seconds=15,
+        equipment_path=None,
+        equipment_pane_height="12%",
+        equipment_settle_seconds=3.0,
+    ):
         target = self.targets.get_target(team_id)
         # A team_id's own config declares which tab it means (several team_ids can share one
         # underlying multi-tab target, e.g. team 1-5 each pinned to one of the same site's 5
@@ -93,6 +104,15 @@ class BrowserScreenshotService:
         final_path = output_dir / image_name
 
         tab_name, startup_info = self.profile_manager.ensure_tab(team_id, target, tab_index=tab)
+        if equipment_path:
+            # Reroutes this channel's own tab to one equipment's graphic via the SPA's hash
+            # routing before screenshotting it -- the tab stays on this equipment afterward, so
+            # a plain (non-equipment) capture of the same channel right after would also show it,
+            # same as how re-sending a photo re-captures whatever the tab currently displays.
+            self.profile_manager.service.navigate_equipment(
+                tab_name, equipment_path, pane_height=equipment_pane_height,
+                settle_seconds=equipment_settle_seconds, timeout_seconds=timeout_seconds,
+            )
         capture_result = self.profile_manager.service.screenshot(
             tab_name, output_path=raw_path, timeout_seconds=timeout_seconds
         )
@@ -140,6 +160,7 @@ class BrowserScreenshotService:
             "target_name": target_name,
             "tab": tab,
             "user_id": user_id or "",
+            "equipment_path": equipment_path or "",
             "debug_port": self.profile_manager.port,
             "browser_startup": startup_info,
             "page_title": page.get("title", ""),

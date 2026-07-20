@@ -13,11 +13,7 @@ GENERAL_HELP_WORDS = {"帮助", "help"}
 PRIVATE_CHANNEL_WORDS = {"私密", "private"}
 PRIVATE_CHANNEL_PASSCODE = "11223344"
 
-PRIVATE_CHANNEL_UNLOCKED_TEXT = (
-    "已解锁私密频道\n"
-    "\n"
-    "发送\"私密\"（或 private）即可进入"
-)
+PRIVATE_CHANNEL_UNLOCKED_TEXT = "已解锁私密频道"
 
 PRIVATE_CHANNEL_JOINED_TEXT = (
     "已进入私密频道\n"
@@ -34,7 +30,7 @@ FIRST_JOIN_STORAGE_NOTICE = (
 PRIVATE_CHANNEL_SAVED_TEXT = "图片已保存"
 
 
-def _format_channel_list(channel_ids):
+def format_channel_list(channel_ids):
     """Formats channel ids as a natural-language Chinese list, e.g. ["1","2","3"] ->
     "1、2 或 3". Sorted numerically where possible so channels read in a sensible order even
     though they're stored as dict/string keys."""
@@ -50,7 +46,7 @@ def _format_channel_list(channel_ids):
 
 
 def build_general_help_text(visible_channel_ids):
-    channel_list = _format_channel_list(visible_channel_ids)
+    channel_list = format_channel_list(visible_channel_ids)
     return (
         "您好，这是截图机器人，使用说明如下\n"
         "\n"
@@ -77,7 +73,7 @@ def build_channel_guidance(channel_id, visible_channel_ids):
     have none) up front, then the two things they can actually do next -- this is the message
     that stands in for a human clicking around a confusing app for the first time, so it needs
     to say what a "channel" even is and what typing a photo/digit does, in plain terms."""
-    channel_list = _format_channel_list(visible_channel_ids)
+    channel_list = format_channel_list(visible_channel_ids)
     if not channel_id or channel_id == UNASSIGNED:
         return (
             "您好，这是截图机器人\n"

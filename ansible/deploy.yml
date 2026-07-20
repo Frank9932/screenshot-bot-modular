@@ -30,6 +30,10 @@
       ansible.builtin.import_tasks: tasks/cloudflared.yml
       tags: cloudflared
 
+    - name: Install permanent tunnel service (if a token is configured for this host)
+      ansible.builtin.import_tasks: tasks/tunnel.yml
+      tags: tunnel
+
     - name: Deploy local secrets
       ansible.builtin.import_tasks: tasks/secrets.yml
       tags: secrets

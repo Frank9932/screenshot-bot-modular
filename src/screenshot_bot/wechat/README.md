@@ -14,9 +14,20 @@ Handle WeChat Official Account protocol and API calls. It does not decide which 
   trips are measured — `capture_ms`/`watermark_ms` only cover the browser side, so a slow reply
   that isn't a slow capture has to show up in one of these instead.
 - `WeChatOfficialClient.send_customer_text(access_token, touser, content)`
+- `WeChatOfficialClient.create_menu(access_token, menu) -> dict` — `cgi-bin/menu/create`
+- `WeChatOfficialClient.get_menu(access_token) -> dict` — `cgi-bin/menu/get`
+- `WeChatMenuManager(appid, appsecret, client=None)` — `set_menu(menu)` and `get_menu()`, same
+  retry-once-on-invalid-token pattern as `WeChatImageSender`. The menu payload itself (which
+  buttons, which `EventKey`s) is built by `screenshot_bot.workflow.menu`, not here — this class
+  only pushes/reads whatever payload it's given.
 - `WeChatMediaDownloader(appid=None, appsecret=None, client=None)`
 - `WeChatMediaDownloader.download(media_id) -> bytes`
-- `verify_wechat_signature(token, query)`
+- `verify_wechat_signature(token, query)` — a failed check on either `do_GET`/`do_POST` logs the
+  rejection (console `log_line("webhook", ...)`, and for POST also a JSONL event
+  `{"ok": false, "error": "invalid signature", ...}`) before returning 403. Previously silent:
+  a token/URL mismatch between this host's config and what's registered in the WeChat console
+  produced zero trace in any log this project ships, making it indistinguishable from a dead
+  tunnel or a crashed process from every other signal (health check, browser state, uptime).
 - `parse_xml_message(body)`
 - `message_dedupe_key(message)`
 

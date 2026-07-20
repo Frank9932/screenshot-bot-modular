@@ -3,6 +3,7 @@ import threading
 from urllib.parse import urlparse
 
 from screenshot_bot.config import resolve_path
+from screenshot_bot.runtime.console_log import log_line
 
 from .cdp_multi_tab_service import CdpMultiTabService, launch_chrome, wait_for_port
 from .devtools_client import http_json
@@ -126,9 +127,22 @@ class BrowserProfileManager:
         }
         self.service.login(tab_name, username, password, **login_kwargs)
 
+        def _recover(error):
+            # keep_alive() only detects that the session died; it can't fix that itself since
+            # it never holds credentials. This closure does, so it's what actually gets a fresh
+            # cookie: navigate off whatever the tab is currently showing (so login()'s state
+            # check reads real auth state, not a stale DOM) and log in again.
+            log_line("browser", f"re-authenticating {tab_name} after keep_alive failure: {error}")
+            login_url = str(target.get("start_url") or target.get("app_url") or "")
+            if login_url:
+                self.service.navigate(tab_name, login_url)
+            self.service.login(tab_name, username, password, **login_kwargs)
+
         keep_alive_interval = login_config.get("keep_alive_interval_seconds")
         if keep_alive_interval:
-            self.service.start_keep_alive(tab_name, interval_seconds=float(keep_alive_interval))
+            self.service.start_keep_alive(
+                tab_name, interval_seconds=float(keep_alive_interval), on_failure=_recover
+            )
 
         refresh_interval = login_config.get("refresh_interval_seconds")
         if refresh_interval:

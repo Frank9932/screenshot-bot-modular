@@ -11,20 +11,31 @@ from screenshot_bot.wechat.image_sender import WeChatImageSender
 from screenshot_bot.wechat.media_downloader import WeChatMediaDownloader
 from screenshot_bot.wechat.webhook_server import WeChatWebhookServer
 
+from .equipment_catalog import load_categories, load_equipment
+from .equipment_prompts import (
+    EQUIPMENT_LIST_EMPTY_TEXT,
+    build_capture_no_channel_text,
+    build_capture_not_ready_text,
+    build_cancelled_text,
+    build_category_list_text,
+    build_confirm_prompt_text,
+    build_confirmed_text,
+    build_equipment_list_text,
+    build_invalid_selection_text,
+)
+from .equipment_selection_tracker import EquipmentSelectionTracker
 from .help_text import (
     FIRST_JOIN_STORAGE_NOTICE,
-    GENERAL_HELP_WORDS,
     PRIVATE_CHANNEL_JOINED_TEXT,
-    PRIVATE_CHANNEL_PASSCODE,
     PRIVATE_CHANNEL_SAVED_TEXT,
     PRIVATE_CHANNEL_UNLOCKED_TEXT,
-    PRIVATE_CHANNEL_WORDS,
     build_channel_guidance,
     build_general_help_text,
 )
+from .menu import event_key_to_text
+from .message_router import route_message
 from .user_team_tracker import PRIVATE_CHANNEL_ID, UNASSIGNED, UserTeamTracker
 from .watermark_commands import HELP_TEXT as WATERMARK_HELP_TEXT
-from .watermark_commands import parse_watermark_command
 
 
 class WeChatImageReplyWorkflow:
@@ -53,11 +64,23 @@ class WeChatImageReplyWorkflow:
         self.ignore_message_types = _parse_type_set(self.webhook_config.get("ignore_message_types", "image"), keep_disabled_words=True)
         self.capture_timeout_seconds = int(self.webhook_config.get("capture_timeout_seconds", 15))
 
+        equipment_config = get_section(self.config, "equipment_catalog")
+        self.equipment_catalog_enabled = bool(equipment_config.get("enabled", False))
+        self.equipment_csv_path = resolve_path(
+            config_path, equipment_config.get("csv_path"), "runtime/cdp-explore-out/hvac_equipment.csv"
+        )
+        self.equipment_pane_height = equipment_config.get("pane_height", "12%")
+        self.equipment_settle_seconds = float(equipment_config.get("settle_seconds", 3.0))
+        self.equipment_selection_tracker = EquipmentSelectionTracker(
+            resolve_path(config_path, equipment_config.get("selection_tracker_path"), "runtime/equipment-selection-tracker.json")
+        )
+
     def ready_payload(self):
         return {
             "browser_targets_enabled": bool(self.browser.targets.enabled),
             "browser_target_ids": sorted(self.browser.targets.targets.keys()),
             "ignore_message_types": sorted(self.ignore_message_types),
+            "equipment_catalog_enabled": self.equipment_catalog_enabled,
         }
 
     def handle(self, message, received_at, started):
@@ -78,167 +101,243 @@ class WeChatImageReplyWorkflow:
             "ok": False,
         }
 
-        if msg_type == "text":
-            if content.strip().lower() in GENERAL_HELP_WORDS:
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                reply_text = build_general_help_text(self.browser.targets.visible_targets.keys())
-                send_info = self.image_sender.send_text(touser, reply_text)
-                result.update(
-                    {
-                        "ok": True,
-                        "reply_text": reply_text,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
+        # A tap on the custom menu (see menu.py) arrives as an "event"/"CLICK" message with the
+        # button's EventKey as its only payload -- translate it back into the same plain text
+        # typing the equivalent command would have sent, so everything below never needs to know
+        # menu taps exist at all. An unrecognized/stale key (e.g. from a previously pushed menu)
+        # falls through unchanged and ends up as ordinary guidance, same as any other menu/event
+        # push we don't otherwise handle (e.g. "subscribe").
+        routed_msg_type, routed_content = msg_type, content
+        if msg_type == "event" and message.get("Event", "") == "CLICK":
+            menu_text = event_key_to_text(message.get("EventKey", ""))
+            if menu_text is not None:
+                routed_msg_type, routed_content = "text", menu_text
+                result["menu_event_key"] = message.get("EventKey", "")
 
-            if content.strip() == PRIVATE_CHANNEL_PASSCODE:
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                self.user_team_tracker.unlock_private(touser)
-                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_UNLOCKED_TEXT)
-                result.update(
-                    {
-                        "ok": True,
-                        "reply_text": PRIVATE_CHANNEL_UNLOCKED_TEXT,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
-
-            # "私密"/"private" is otherwise inert -- it only means anything for a sender who has
-            # already unlocked it with the passcode above. An un-unlocked sender falls straight
-            # through to the guidance reply below, exactly like any other unrecognized text, so
-            # the private channel stays undiscoverable without the passcode.
-            if content.strip().lower() in PRIVATE_CHANNEL_WORDS and self.user_team_tracker.has_unlocked_private(touser):
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                self.user_team_tracker.set_team(touser, PRIVATE_CHANNEL_ID)
-                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_JOINED_TEXT)
-                result.update(
-                    {
-                        "ok": True,
-                        "reply_text": PRIVATE_CHANNEL_JOINED_TEXT,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
-
-            watermark_command = parse_watermark_command(content)
-            if watermark_command is not None:
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                reply_text = self._handle_watermark_command(watermark_command)
-                send_info = self.image_sender.send_text(touser, reply_text)
-                result.update(
-                    {
-                        "ok": True,
-                        "watermark_command": watermark_command,
-                        "reply_text": reply_text,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
-
-        if msg_type == "image":
+        if routed_msg_type == "image":
             self._store_incoming_image(message, touser, result)
-            channel_id = self.user_team_tracker.get_team(touser)
-            # The private channel only archives what the sender uploads -- there is no
-            # browser_targets entry backing it, so it must return here instead of falling
-            # through to _build_response_image, which would try (and fail) to capture it.
-            if channel_id == PRIVATE_CHANNEL_ID:
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                send_info = self.image_sender.send_text(touser, PRIVATE_CHANNEL_SAVED_TEXT)
-                result.update(
-                    {
-                        "ok": True,
-                        "reply_text": PRIVATE_CHANNEL_SAVED_TEXT,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
-            # A photo carries no channel of its own -- if this sender has never picked a
-            # channel (no prior digit message), there is nothing to capture for them yet.
-            # Nudge them instead of silently archiving the photo with no reply at all.
-            if channel_id == UNASSIGNED:
-                if not touser:
-                    raise RuntimeError("touser missing: FromUserName is empty")
-                reply_text = build_channel_guidance(UNASSIGNED, self.browser.targets.visible_targets.keys())
-                send_info = self.image_sender.send_text(touser, reply_text)
-                result.update(
-                    {
-                        "ok": True,
-                        "reply_text": reply_text,
-                        "send_response": send_info.get("send_response", {}),
-                        "token_ms": send_info.get("token_ms", 0.0),
-                        "send_ms": send_info.get("send_ms", 0.0),
-                        "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
-                    }
-                )
-                return result
 
-        image_result = self._build_response_image(message, result)
-        if image_result.get("trigger_kind") == "guidance":
-            if not touser:
-                raise RuntimeError("touser missing: FromUserName is empty")
-            reply_text = image_result["reply_text"]
-            send_info = self.image_sender.send_text(touser, reply_text)
+        # All the "what should happen" decision-making lives in message_router.route_message --
+        # a pure function with no I/O, so it can be tested/debugged in complete isolation (see
+        # that module's docstring). Everything below this point is just executing its decision:
+        # sending replies, capturing screenshots, persisting channel/unlock state.
+        channel_id = self.user_team_tracker.get_team(touser)
+        private_unlocked = self.user_team_tracker.has_unlocked_private(touser)
+        all_channel_ids = set(self.browser.targets.targets.keys()) if self.browser.targets.enabled else set()
+
+        # route_message stays a pure function (see message_router.py's docstring), so any CSV
+        # data it needs to resolve a category/equipment digit has to be loaded ahead of time,
+        # here, same as all_channel_ids above. equipment_items is only ever consulted when the
+        # stage is actually "awaiting_equipment", so it's the only one worth conditioning on
+        # that -- categories are cheap and used by both "equipment_start" and validating an
+        # "awaiting_category" digit.
+        equipment_stage, equipment_categories, equipment_items = {}, [], []
+        if self.equipment_catalog_enabled:
+            equipment_stage = self.equipment_selection_tracker.get(touser)
+            equipment_categories = self._load_equipment_categories()
+            if equipment_stage.get("stage") == "awaiting_equipment":
+                equipment_items = self._load_equipment_items(equipment_stage.get("category", ""))
+
+        action = route_message(
+            routed_msg_type, routed_content, channel_id, private_unlocked, all_channel_ids, self.ignore_message_types,
+            equipment_catalog_enabled=self.equipment_catalog_enabled,
+            equipment_stage=equipment_stage, equipment_categories=equipment_categories, equipment_items=equipment_items,
+        )
+
+        if action["kind"] == "ignored":
+            result.update({"ok": True, "ignored": True, "reason": action["reason"]})
+            return result
+
+        if not touser:
+            raise RuntimeError("touser missing: FromUserName is empty")
+
+        if action["kind"] == "general_help":
+            reply_text = build_general_help_text(self.browser.targets.visible_targets.keys())
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "unlock_private":
+            self.user_team_tracker.unlock_private(touser)
+            return self._reply_text(result, started, touser, PRIVATE_CHANNEL_UNLOCKED_TEXT)
+
+        if action["kind"] == "join_private":
+            self.user_team_tracker.set_team(touser, PRIVATE_CHANNEL_ID)
+            return self._reply_text(result, started, touser, PRIVATE_CHANNEL_JOINED_TEXT)
+
+        if action["kind"] == "watermark_command":
+            reply_text = self._handle_watermark_command(action["command"])
+            result["watermark_command"] = action["command"]
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "private_photo":
+            return self._reply_text(result, started, touser, PRIVATE_CHANNEL_SAVED_TEXT)
+
+        if action["kind"] == "unassigned_photo_prompt":
+            reply_text = build_channel_guidance(UNASSIGNED, self.browser.targets.visible_targets.keys())
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "guidance":
+            reply_text = build_channel_guidance(channel_id, self.browser.targets.visible_targets.keys())
+            result["trigger_kind"] = "guidance"
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_start":
+            self.equipment_selection_tracker.start(touser)
+            reply_text = build_category_list_text(equipment_categories) if equipment_categories else EQUIPMENT_LIST_EMPTY_TEXT
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_category_selected":
+            category = action["category"]
+            self.equipment_selection_tracker.set_category(touser, category)
+            items = self._load_equipment_items(category)
+            reply_text = build_equipment_list_text(category, items) if items else EQUIPMENT_LIST_EMPTY_TEXT
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_selected":
+            category = action["category"]
+            self.equipment_selection_tracker.set_pending_equipment(touser, category, action["equipment"], action["path"])
+            reply_text = build_confirm_prompt_text(category, action["equipment"])
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_invalid_selection":
+            if action["stage"] == "awaiting_category":
+                list_text = build_category_list_text(equipment_categories)
+            else:
+                list_text = build_equipment_list_text(equipment_stage.get("category", ""), equipment_items)
+            return self._reply_text(result, started, touser, build_invalid_selection_text(list_text))
+
+        if action["kind"] == "equipment_confirmed":
+            self.equipment_selection_tracker.confirm(touser)
+            reply_text = build_confirmed_text(equipment_stage.get("category", ""), equipment_stage.get("equipment", ""))
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_cancelled":
+            self.equipment_selection_tracker.cancel(touser)
+            return self._reply_text(result, started, touser, build_cancelled_text())
+
+        if action["kind"] == "equipment_capture_not_ready":
+            return self._reply_text(result, started, touser, build_capture_not_ready_text())
+
+        if action["kind"] == "equipment_capture_no_channel":
+            reply_text = build_capture_no_channel_text(self.browser.targets.visible_targets.keys())
+            return self._reply_text(result, started, touser, reply_text)
+
+        if action["kind"] == "equipment_capture":
+            return self._capture_equipment_and_reply(result, started, touser, action)
+
+        # Remaining kinds -- "join_channel" (text digit) and "recapture" (photo from a sender
+        # with an assigned channel) -- both trigger an actual browser capture.
+        target_channel_id = action["channel_id"]
+        if action["kind"] == "join_channel":
+            self.user_team_tracker.set_team(touser, target_channel_id)
+        return self._capture_and_reply(result, started, touser, target_channel_id, action.get("is_first_join", False))
+
+    def _reply_text(self, result, started, touser, reply_text):
+        send_info = self.image_sender.send_text(touser, reply_text)
+        result.update(
+            {
+                "ok": True,
+                "reply_text": reply_text,
+                "send_response": send_info.get("send_response", {}),
+                "token_ms": send_info.get("token_ms", 0.0),
+                "send_ms": send_info.get("send_ms", 0.0),
+                "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
+            }
+        )
+        return result
+
+    def _capture_and_reply(self, result, started, touser, channel_id, first_join_notice):
+        image_name = f"channel{channel_id}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
+        result = self._run_capture(result, started, touser, channel_id, image_name)
+        if result["ok"] and result.get("trigger_kind") != "capture_error" and first_join_notice:
+            notice_send_info = self.image_sender.send_text(touser, FIRST_JOIN_STORAGE_NOTICE)
+            result["first_join_notice_send_response"] = notice_send_info.get("send_response", {})
+        return result
+
+    def _capture_equipment_and_reply(self, result, started, touser, action):
+        channel_id = action["channel_id"]
+        equipment_name = action["equipment"]
+        result["equipment_category"] = action["category"]
+        result["equipment_name"] = equipment_name
+        image_name = f"channel{channel_id}-equipment-{_safe_filename(equipment_name)}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
+        return self._run_capture(
+            result, started, touser, channel_id, image_name,
+            equipment_path=action["path"],
+            equipment_pane_height=self.equipment_pane_height,
+            equipment_settle_seconds=self.equipment_settle_seconds,
+        )
+
+    def _run_capture(self, result, started, touser, channel_id, image_name, **extra_capture_kwargs):
+        image_path = self.screenshot_dir / image_name
+        result["browser_team_id"] = channel_id
+        result["capture_started_at"] = utc_now_iso()
+
+        try:
+            capture_info = self.browser.capture(
+                channel_id,
+                user_id=touser,
+                output_dir=self.screenshot_dir,
+                image_name=image_name,
+                timeout_seconds=self.capture_timeout_seconds,
+                **extra_capture_kwargs,
+            )
+        except Exception as exc:
+            result["capture_error"] = str(exc)
+            write_latency_image(image_path, result)
             result.update(
                 {
-                    "ok": True,
-                    "trigger_kind": "guidance",
-                    "reply_text": reply_text,
-                    "send_response": send_info.get("send_response", {}),
-                    "token_ms": send_info.get("token_ms", 0.0),
-                    "send_ms": send_info.get("send_ms", 0.0),
+                    "trigger_kind": "capture_error",
+                    "response_image_kind": "capture_error",
+                    "screenshot_path": str(image_path),
+                    "capture_ms": 0.0,
+                }
+            )
+            # The placeholder image must actually reach the user, not just land on disk --
+            # without this send, a browser/CDP failure produced `ok=True` but silently left the
+            # sender with no reply at all (bug: send_image_file was never called on this path).
+            return self._send_capture_reply(result, started, touser, str(image_path))
+
+        result.update(
+            {
+                "screenshot_done": utc_now_iso(),
+                "screenshot_path": capture_info["published_path"],
+                "capture_ms": round(float(capture_info.get("capture_ms", 0.0)), 1),
+                "trigger_kind": "browser_target",
+                "response_image_kind": "browser_screenshot",
+                "capture_info": capture_info,
+            }
+        )
+        return self._send_capture_reply(result, started, touser, capture_info["published_path"])
+
+    def _send_capture_reply(self, result, started, touser, image_path):
+        """Send the just-captured (or capture-error placeholder) image and fold the outcome
+        into `result` -- without ever letting a sender exception escape. By this point capture
+        and/or local storage may have already genuinely succeeded (`result` already carries
+        their stage fields), so a WeChat upload/send failure must be reported as its own
+        truthful ok=False stage rather than either masquerading as success or losing that
+        already-gathered context to an uncaught exception bubbling out of .handle()."""
+        try:
+            send_info = self.image_sender.send_image_file(touser, image_path)
+        except Exception as exc:
+            result.update(
+                {
+                    "ok": False,
+                    "send_error": str(exc),
                     "total_latency": round((time.perf_counter() - started) * 1000.0, 1),
                 }
             )
             return result
-        if image_result.get("ignored"):
-            result.update({"ok": True, "ignored": True, "reason": image_result.get("reason", "ignored")})
-            return result
-        if not touser:
-            raise RuntimeError("touser missing: FromUserName is empty")
 
-        image_path = image_result["image_path"]
         result.update(
             {
-                "screenshot_done": utc_now_iso(),
-                "screenshot_path": image_path,
-                "capture_ms": round(float(image_result.get("capture_ms", 0.0)), 1),
-                "trigger_kind": image_result["trigger_kind"],
-                "response_image_kind": image_result["response_image_kind"],
+                "media_upload_done": utc_now_iso(),
+                "media_id": send_info.get("media_id", ""),
+                "upload_response": send_info.get("upload_response", {}),
             }
         )
-        for key in ["browser_team_id", "capture_error", "capture_info"]:
-            if image_result.get(key) not in [None, {}, ""]:
-                result[key] = image_result[key]
-
-        send_info = self.image_sender.send_image_file(touser, image_path)
-        result.update({"media_upload_done": utc_now_iso(), "media_id": send_info.get("media_id", ""), "upload_response": send_info.get("upload_response", {})})
-        send_result = send_info.get("send_response", {})
         result.update(
             {
                 "message_send_done": utc_now_iso(),
-                "send_response": send_result,
+                "send_response": send_info.get("send_response", {}),
                 "token_ms": send_info.get("token_ms", 0.0),
                 "upload_ms": send_info.get("upload_ms", 0.0),
                 "send_ms": send_info.get("send_ms", 0.0),
@@ -246,9 +345,6 @@ class WeChatImageReplyWorkflow:
                 "ok": True,
             }
         )
-        if image_result.get("first_join_notice"):
-            notice_send_info = self.image_sender.send_text(touser, FIRST_JOIN_STORAGE_NOTICE)
-            result["first_join_notice_send_response"] = notice_send_info.get("send_response", {})
         return result
 
     def _handle_watermark_command(self, command):
@@ -298,6 +394,20 @@ class WeChatImageReplyWorkflow:
 
         return WATERMARK_HELP_TEXT
 
+    def _load_equipment_categories(self):
+        try:
+            return load_categories(self.equipment_csv_path)
+        except OSError:
+            # Missing/unreadable CSV is treated the same as an empty catalog -- callers already
+            # fall back to EQUIPMENT_LIST_EMPTY_TEXT for an empty list, no separate error path.
+            return []
+
+    def _load_equipment_items(self, category):
+        try:
+            return load_equipment(self.equipment_csv_path, category)
+        except OSError:
+            return []
+
     def _store_incoming_image(self, message, touser, result):
         media_id = message.get("MediaId", "")
         if not media_id:
@@ -323,74 +433,9 @@ class WeChatImageReplyWorkflow:
             # Best-effort: a failed download/save must not block the reply flow.
             result["incoming_image_error"] = str(exc)
 
-    def _build_response_image(self, message, details):
-        msg_type = message.get("MsgType", "")
-        content = message.get("Content", "")
-        touser = message.get("FromUserName", "")
-        message_text = content if msg_type == "text" else f"<{msg_type}>"
-        browser_team_id = self.browser.parse_team_id(message_text) if msg_type == "text" else None
-        first_join_notice = False
-        if msg_type == "text" and browser_team_id is not None:
-            # Sending a channel digit both captures immediately (unchanged) and joins that
-            # channel -- this is the only place channel membership is ever set. If this is the
-            # sender's very first channel (they were UNASSIGNED before), a follow-up text notice
-            # tells them their images are archived per-user -- see FIRST_JOIN_STORAGE_NOTICE.
-            first_join_notice = self.user_team_tracker.get_team(touser) == UNASSIGNED
-            self.user_team_tracker.set_team(touser, browser_team_id)
-        if msg_type == "image":
-            # A photo has no channel of its own -- capture whichever channel this sender last
-            # joined. handle() already returned early (before reaching here) if they've never
-            # joined one, so this is always a real channel by this point.
-            browser_team_id = self.user_team_tracker.get_team(touser)
 
-        details["browser_team_id"] = browser_team_id
-
-        if browser_team_id is None:
-            if msg_type in self.ignore_message_types:
-                return {"ignored": True, "reason": "message_type_disabled"}
-            # Nothing above recognized this as a command or capture trigger. A generic
-            # placeholder screenshot is meaningless to an actual end user -- tell them what to
-            # do instead, tailored to whether they've already joined a channel.
-            return {
-                "trigger_kind": "guidance",
-                "reply_text": build_channel_guidance(
-                    self.user_team_tracker.get_team(touser), self.browser.targets.visible_targets.keys()
-                ),
-            }
-
-        name_prefix = f"channel{browser_team_id}"
-        image_name = f"{name_prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.png"
-        image_path = self.screenshot_dir / image_name
-        details["capture_started_at"] = utc_now_iso()
-
-        try:
-            capture_info = self.browser.capture(
-                browser_team_id,
-                user_id=touser,
-                output_dir=self.screenshot_dir,
-                image_name=image_name,
-                timeout_seconds=self.capture_timeout_seconds,
-            )
-            return {
-                "trigger_kind": "browser_target",
-                "response_image_kind": "browser_screenshot",
-                "browser_team_id": browser_team_id,
-                "image_path": capture_info["published_path"],
-                "capture_ms": float(capture_info.get("capture_ms", 0.0)),
-                "capture_info": capture_info,
-                "first_join_notice": first_join_notice,
-            }
-        except Exception as exc:
-            details["capture_error"] = str(exc)
-            write_latency_image(image_path, details)
-            return {
-                "trigger_kind": "capture_error",
-                "response_image_kind": "capture_error",
-                "image_path": str(image_path),
-                "capture_ms": 0.0,
-                "capture_error": str(exc),
-                "capture_info": {},
-            }
+def _safe_filename(name):
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
 
 
 def _parse_type_set(value, keep_disabled_words=False):

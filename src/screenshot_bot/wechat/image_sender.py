@@ -39,8 +39,16 @@ class WeChatImageSender:
         upload = self.client.upload_temporary_image(token, image_path)
         upload_ms = (time.perf_counter() - upload_started) * 1000.0
 
+        media_id = upload.get("media_id")
+        if not media_id:
+            # The real WeChatOfficialClient always raises before returning if media_id is
+            # missing (see official_api.py), so this only fires against a malformed response
+            # from some other client -- fail clearly here rather than sending a customer-image
+            # message with no media_id (which would just surface as an opaque KeyError today).
+            raise RuntimeError(f"upload response missing media_id: {upload!r}")
+
         send_started = time.perf_counter()
-        send_result = self.client.send_customer_image(token, touser, upload["media_id"])
+        send_result = self.client.send_customer_image(token, touser, media_id)
         send_ms = (time.perf_counter() - send_started) * 1000.0
 
         return upload, send_result, {"token_ms": token_ms, "upload_ms": upload_ms, "send_ms": send_ms}

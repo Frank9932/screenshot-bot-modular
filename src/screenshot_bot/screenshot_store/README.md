@@ -6,10 +6,13 @@ about the saved file. It does not launch or drive Chrome, does not call the WeCh
 does not parse user/team text commands — callers pass it a storage key and raw image bytes.
 The key is an arbitrary relative path segment, not necessarily a literal "tab" — two capability
 modules use it for two different purposes:
-- `browser/screenshot_service.py` keys it `{user_id}/tab_{tab}` (or `{target_name}/tab_{tab}`
-  when no `user_id` is available) for outgoing browser-capture audit history.
-- `workflow/wechat_image_reply.py` keys it by `{FromUserName}` for incoming photos WeChat users
-  send to the bot.
+- `browser/screenshot_service.py` calls it *twice* per capture — `key = "{user_id}/channel_{team_id}/original"`
+  for the pre-watermark bytes and `key = "{user_id}/channel_{team_id}/watermarked"` for the exact
+  bytes sent to WeChat — so each sender gets their own top-level folder, channel nested inside it,
+  and either version of a capture can be recovered later. `user_id` falls back to `unknown` for
+  callers that don't pass one (e.g. audit/demo scripts).
+- `workflow/wechat_image_reply.py` keys it `{user_id}/channel_{joined_channel_id or 'unassigned'}`
+  for incoming photos WeChat users send to the bot.
 
 ## Public API
 - `ScreenshotStore(base_dir="storage/screenshots")`
@@ -48,7 +51,7 @@ PY
 from screenshot_bot.screenshot_store import ScreenshotStore
 
 store = ScreenshotStore()
-record = store.save_screenshot("tradingview", image_bytes, duration_ms=84)
-print(record.file_path)       # storage/screenshots/tradingview/20260704_101530_238_84ms.png
+record = store.save_screenshot("oWeChatUser123/channel_1/watermarked", image_bytes, duration_ms=84)
+print(record.file_path)       # storage/screenshots/oWeChatUser123/channel_1/watermarked/20260704_101530_238_84ms.png
 print(record.size_bytes)
 ```

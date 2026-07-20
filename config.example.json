@@ -154,6 +154,14 @@
     "margin_bottom": 70,
     "line_spacing": 8
   },
+  "equipment_catalog": {
+    "enabled": false,
+    "csv_path": "runtime/cdp-explore-out/hvac_equipment.csv",
+    "pane_height": "12%",
+    "settle_seconds": 3.0,
+    "navigate_timeout_seconds": 35,
+    "selection_tracker_path": "runtime/equipment-selection-tracker.json"
+  },
   "wechat_official_webhook": {
     "enabled": true,
     "host": "127.0.0.1",

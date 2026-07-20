@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import parse
 
 from screenshot_bot.runtime.clock import utc_now_iso
+from screenshot_bot.runtime.console_log import log_line
 from screenshot_bot.runtime.dedupe import MessageDedupe
 from screenshot_bot.runtime.jsonl import JsonlLogger
 from screenshot_bot.wechat.signature import verify_wechat_signature
@@ -56,6 +57,12 @@ class WeChatWebhookHandler(BaseHTTPRequestHandler):
             return
         query = parse.parse_qs(parse.urlsplit(self.path).query)
         if not verify_wechat_signature(self.server.token, query):
+            # A silent 403 here (the previous behavior) is indistinguishable from "no request
+            # ever arrived at all" -- neither the console log nor the JSONL event log carried any
+            # trace of it, which made a token/URL mismatch between this host's config and what's
+            # registered in the WeChat console look identical to a dead tunnel or a crashed
+            # process from every other signal (health check, browser state, uptime).
+            log_line("webhook", f"GET signature verification failed from {self.client_address[0]}")
             self._text(403, "invalid signature")
             return
         self._text(200, query.get("echostr", [""])[0])
@@ -68,6 +75,16 @@ class WeChatWebhookHandler(BaseHTTPRequestHandler):
             return
         query = parse.parse_qs(parse.urlsplit(self.path).query)
         if not verify_wechat_signature(self.server.token, query):
+            # Same visibility gap as do_GET above, but this is the one that actually matters
+            # operationally: every real WeChat message comes in as a POST, so a token/URL
+            # mismatch here means every message a user sends vanishes without a single line in
+            # any log this project ships -- logging it to both the console (quick glance while
+            # tailing server.out.log) and the JSONL (so it shows up next to real message events,
+            # not just something you'd catch by chance) closes that gap.
+            log_line("webhook", f"POST signature verification failed from {self.client_address[0]}")
+            self.server.logger.write(
+                {"received_at": received_at, "ok": False, "error": "invalid signature", "remote_addr": self.client_address[0]}
+            )
             self._text(403, "invalid signature")
             return
         length = int(self.headers.get("Content-Length", "0"))

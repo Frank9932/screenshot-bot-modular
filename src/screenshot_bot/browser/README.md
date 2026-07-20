@@ -8,7 +8,10 @@ per target.
 ## Public API
 - `BrowserScreenshotService(config_path)`
 - `BrowserScreenshotService.parse_team_id(text)`
-- `BrowserScreenshotService.capture(team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15)`
+- `BrowserScreenshotService.capture(team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15, equipment_path=None, equipment_pane_height="12%", equipment_settle_seconds=3.0)` —
+  `equipment_path`, if given, reroutes the target's own tab to that hash path (see "Equipment
+  navigation" below) before screenshotting it; omit for a plain channel capture (unchanged
+  behavior)
 - `BrowserScreenshotService.warm_up(team_ids=None)` — open/log into every configured team's own
   tab up front, or just the given `team_ids` (see "Startup warm-up")
 - `BrowserScreenshotService.describe_watermark(team_id)` / `.set_watermark_field(team_id, field_index, value)` /
@@ -480,3 +483,45 @@ for name in ("tab_0", "tab_1", "tab_2", "tab_3", "tab_4"):
 See `scripts/run_cdp_webstation_demo.py` for a runnable end-to-end demo against a real
 login-gated site, including both the keep-alive loop and per-tab auto-refresh
 (`--refresh-interval-seconds`, default 300; pass `0` to disable).
+
+### Per-tab operation locking
+
+`keep_alive`, `refresh`, `login`, `navigate`, `screenshot`, and `navigate_equipment` each open
+their own independent `DevToolsWebSocket` connection to a tab, and up to three of them can be
+triggered by entirely different background threads at once for the same tab: `keep_alive` on its
+own loop (`keep_alive_interval_seconds`), `refresh` on its own, unrelated loop
+(`refresh_interval_seconds`), and a capture request arriving at any time. Observed live: a
+scheduled `Page.reload()` (refresh) landing while a `keep_alive` ping or `login()`
+fill/submit sequence was mid-flight tore down the page's JS execution context out from under it —
+the tab then wedged permanently, every subsequent `login()` call timing out on "login page did
+not become ready," starting within ~10s of that tab's first scheduled refresh and never
+recovering on its own (confirmed: `refresh_interval_seconds: 3600`, wedge onset lined up with the
+1-hour mark almost exactly). `CdpMultiTabService` now holds one `threading.Lock` per tab name
+(`_lock_for(name)`) and every one of those six methods acquires it before touching the tab, so at
+most one CDP operation touches a given tab's page/JS state at a time. Locks are per tab, not
+global — operations on different tabs (e.g. two different `team_id`s' own pinned tabs) still run
+fully in parallel; only same-tab operations now queue instead of racing.
+
+## Equipment navigation
+
+`equipment_navigation.navigate_to_equipment_graphic(client, path, pane_height="12%",
+settle_seconds=3.0, timeout_seconds=35)` routes an already-`Runtime.enable`'d tab to one
+equipment's graphic page via the SPA's own hash routing (`window.location.hash = path`), waits
+for it to actually render (polls `document.querySelectorAll('svg').length > 0`), then collapses
+the bottom alarm-list pane (`.layout-pane.layout-pane-primary`) so the equipment graphic/data
+tables get full height — raises `RuntimeError` if no svg content ever appears. This is the exact
+sequence `scripts/screenshot_equipment_list.py` already uses to batch-capture equipment offline
+against a throwaway Chrome process; it's factored out here so it can also run against an
+already-open, already-logged-in shared tab.
+
+`CdpMultiTabService.navigate_equipment(name, path, pane_height="12%", settle_seconds=3.0,
+timeout_seconds=35)` wraps that for one named tab (opens its own `DevToolsWebSocket`, same
+pattern as `screenshot()`/`login()`). `BrowserScreenshotService.capture(..., equipment_path=...)`
+calls it right before the screenshot when `equipment_path` is given — the channel's tab is left
+showing that equipment afterward, same as how re-sending a photo re-captures whatever a tab
+currently displays.
+
+This is what backs the WeChat select-equipment guided flow (category -> equipment -> confirm ->
+capture) described in `workflow/README.md` → "Select-equipment flow"; `path` there comes from the
+equipment CSV's `path` column (`workflow.equipment_catalog`), the same file
+`scripts/screenshot_equipment_list.py` reads.

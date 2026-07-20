@@ -139,6 +139,49 @@ steps to get stuck in. All of the prompts above are written 傻瓜式 (plain-lan
 technical background) — a sender messaging this bot may have no context beyond what it tells them
 directly.
 
+## Tap menu
+
+Every command above can also be typed, but WeChat's own custom menu (the row of buttons pinned
+under the chat input) gives senders a tap alternative for the common ones, instead of typing
+digits/`帮助`/`水印` by hand. WeChat caps this at 3 top-level buttons, so the layout depends on
+whether `equipment_catalog.enabled` is on (see "Select-equipment flow" below):
+
+- **Off (default)**: **选择频道** (submenu, one button per visible non-backup channel, up to 5;
+  tapping a channel = typing its digit) + **帮助** + **水印帮助** (= typing `水印`, the general
+  help, not any one channel's status).
+- **On**: **选择设备** (starts the category → equipment → confirm flow) + **选择频道** (now the
+  second button, same submenu as above) + **获取截图** (captures whatever equipment the sender
+  has confirmed). `帮助`/`水印` drop off the menu in this layout — typing them directly still
+  works, the menu was always a tap shortcut for typing, never the only way in.
+
+The passcode-gated private channel is deliberately never exposed as a button, same as it's never
+mentioned in `帮助` text.
+
+Under the hood, a tap arrives as a WeChat `event`/`CLICK` message whose `EventKey` is translated
+back into the exact same text `route_message` would see from typing — see
+`src/screenshot_bot/workflow/menu.py` (`build_menu_payload`/`event_key_to_text`) and
+`WeChatImageReplyWorkflow.handle()`. No routing logic is duplicated between tapping and typing.
+
+The menu isn't pushed automatically — run it after changing which channels are visible, toggling
+`equipment_catalog.enabled`, or once after first deploying:
+
+```powershell
+scripts\Bot.ps1 menu set    # push the menu built from config.json's visible channels
+scripts\Bot.ps1 menu get    # show what's currently live on the account
+```
+
+## Select-equipment flow
+
+For deployments with a large, browsable equipment list rather than a handful of fixed channels:
+tap/type `设备` → reply with a number to pick a category → reply with a number to pick equipment
+→ reply `确认` to lock it in → tap/type `获取截图` to capture that equipment's own graphic (via
+the sender's already-joined channel's tab, rerouted to that equipment before the screenshot).
+Disabled by default (`equipment_catalog.enabled: false`); when off, all of this is completely
+inert and those words behave like any other unrecognized text. See
+`src/screenshot_bot/workflow/README.md` → "Select-equipment flow" for the full state machine and
+config (`equipment_catalog.csv_path`, expected as `category,equipment,path` columns — the same
+file `scripts/screenshot_equipment_list.py` reads for offline batch capture).
+
 ## Watermark customization
 
 Each channel can customize its own watermark field text and background opacity over
