@@ -8,7 +8,10 @@ per target.
 ## Public API
 - `BrowserScreenshotService(config_path)`
 - `BrowserScreenshotService.parse_team_id(text)`
-- `BrowserScreenshotService.capture(team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15)`
+- `BrowserScreenshotService.capture(team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15, equipment_path=None, equipment_pane_height="12%", equipment_settle_seconds=3.0)` —
+  `equipment_path`, if given, reroutes the target's own tab to that hash path (see "Equipment
+  navigation" below) before screenshotting it; omit for a plain channel capture (unchanged
+  behavior)
 - `BrowserScreenshotService.warm_up(team_ids=None)` — open/log into every configured team's own
   tab up front, or just the given `team_ids` (see "Startup warm-up")
 - `BrowserScreenshotService.describe_watermark(team_id)` / `.set_watermark_field(team_id, field_index, value)` /
@@ -47,9 +50,11 @@ per target.
 - PNG file path in `published_path` (watermarked, for the WeChat reply), plus two permanent
   audit copies: `store_path` (pre-watermark bytes) and `watermarked_store_path` (the exact bytes
   sent to WeChat), both filed under `screenshot_store`
-- Audit storage is organized `channel_{team_id}/original/...` and `channel_{team_id}/watermarked/...`
-  — everyone's captures for one channel land in that channel's two sub-folders, distinguished by
-  the timestamp already in each capture's filename (no per-user or per-tab sub-folders)
+- Audit storage is organized `{user_id}/channel_{team_id}/original/...` and
+  `{user_id}/channel_{team_id}/watermarked/...` — each sender gets their own top-level folder,
+  with channel as a subfolder inside it, distinguished from their other captures by the timestamp
+  already in each filename. `user_id` falls back to `unknown` for callers that don't pass one
+  (e.g. audit/demo scripts).
 - Capture metadata including target id, tab index, requester id, shared DevTools port, page
   title, page URL, capture time, and watermark data
 
@@ -229,16 +234,18 @@ Each tab gets its own Chrome DevTools tab, named `<target_name>` (tab 0) or
 `<target_name>_tab<N>` (tab N), and its own raw-capture history via `ScreenshotStore`:
 `published_path`/`raw_path` still land in the usual flat `output_dir`/`raw_dir` (unchanged, for
 the WeChat reply), but every capture is additionally saved *twice* — once pre-watermark to
-`{store_dir}/channel_{team_id}/original/{timestamp}_{duration}ms.png` (returned as `store_path`),
-once post-watermark to `{store_dir}/channel_{team_id}/watermarked/{timestamp}_{duration}ms.png`
-(returned as `watermarked_store_path`) — regardless of who requested it or which tab it resolved to.
+`{store_dir}/{user_id}/channel_{team_id}/original/{timestamp}_{duration}ms.png` (returned as
+`store_path`), once post-watermark to
+`{store_dir}/{user_id}/channel_{team_id}/watermarked/{timestamp}_{duration}ms.png` (returned as
+`watermarked_store_path`) — `user_id` is whoever requested the capture (falls back to `unknown`
+if not passed), so each sender gets their own top-level folder with channel nested inside it.
 
 Verified end-to-end (against a local mock of the login-gated site, since the real
 `10.121.0.14` isn't reachable from every environment): 5 different simulated WeChat users each
 capturing a different team_id (`"1"`-`"5"`) triggers exactly one real login (not five) and
-stores each capture under its own `channel_{team_id}/{original,watermarked}/...` directories;
-`keep_alive`/`auto_refresh` keep firing in the background for as long as the owning process
-stays up; and a simulated process restart (fresh `BrowserScreenshotService`, same running
+stores each capture under its own `{user_id}/channel_{team_id}/{original,watermarked}/...`
+directories; `keep_alive`/`auto_refresh` keep firing in the background for as long as the owning
+process stays up; and a simulated process restart (fresh `BrowserScreenshotService`, same running
 Chrome) adopts all 5 existing tabs with no duplicates and no repeated login.
 
 ### Startup warm-up
@@ -396,16 +403,27 @@ const intervalHandle = setInterval(async () => {
 }, 60000);
 ```
 
-`peekObject` ends up POSTing to `./json/POST` with a JSON-RPC-style body (`{"command": "PeekObjects", ...}`),
-an `X-CSRF-Token` header read from a `#csrf` hidden `<input>` embedded in the page HTML
+`peekObject` POSTs to `./json/POST` with `{"command": "PeekObjects", "data": [serverPath]}`, an
+`X-CSRF-Token` header read from a `#csrf` hidden `<input>` embedded in the page HTML
 (`getCSRFToken()` in `login.js`), and `credentials: "same-origin"` so the session cookie rides
-along. `PeekObjects` needs a valid object path to target, which our tabs don't have (they never
-navigate anywhere in the object tree), so `CdpMultiTabService.keep_alive()` sends a
-`GetServersInfo` command instead — a read-only command that needs no path and returns HTTP 200
-just like a real app request, resetting the server's idle timer the same way:
+along. `CdpMultiTabService.keep_alive()` sends this *exact* command: `serverPath` is read from
+the tab's own `window.location.hash` (which the SPA sets to the same value
+`PathHelper.getCurrentServerPath()` resolves to internally, e.g. `/RYG1-SVBMS` — confirmed live
+against the real server, response `{"PeekObjectsRes": ["/RYG1-SVBMS"]}`, identical to what the
+app's own watchdog gets), so there is no hardcoded per-deployment server name to configure.
+
+An earlier version of this sent `GetServersInfo` instead, on the (never verified) assumption that
+any read-only 200-OK command would reset the server's idle timer the same way. It didn't: the
+server can return **HTTP 200 with a body reporting the session as already dead** —
+`{"ERROR_LOGGED_OUT": "LoggedOut", "ErrMsg": "CLIENT_HAVE_BEEN_LOGGED_OUT", ...}` — so a
+status-code-only check silently treated a dead session as a successful ping, for however long
+the pinging kept running. `keep_alive()` now raises when it sees this in the response body, and
+`start_keep_alive`'s background loop logs that as `keep_alive(<name>) failed: ...` — the earlier
+version *never once logged anything*, successful or not, because a plain return value that
+nothing inspects is invisible regardless of what it says.
 
 ```python
-svc.keep_alive("tab_0")                                    # one-shot ping, returns {"status": 200, "ok": True}
+svc.keep_alive("tab_0")                                    # one-shot ping, raises if the session is already dead
 svc.start_keep_alive("tab_0", interval_seconds=60)          # background thread, mirrors the app's own interval
 svc.stop_keep_alive("tab_0")
 ```
@@ -414,6 +432,25 @@ Only one tab needs to run this: all tabs in the same Chrome process share the se
 so a ping from any one of them keeps the whole session — and therefore every tab — alive.
 
 ### Background page refresh
+
+The keep-alive ping above only addresses a server-side idle timeout. This site has a **second,
+independent, client-side auto-logout** that keep-alive cannot touch at all: the account's own
+settings report `"hasTimeout": true, "timeout": 120` (minutes), and the bundle's
+`handleAutoLogout()` arms a debounced `autoLogout()` for that long from page load —
+*unconditionally*, regardless of how much authenticated traffic the tab sends. In a working build
+this debounce resets on real user interaction; in this specific bundle it can't, because
+`activityEvents` is dead-code-eliminated to `null` (`null && ([...])`, apparently a stripped
+feature flag) — `activityEvents.forEach(...)` throws before a single listener attaches, so *no*
+activity, real or synthetic, ever resets it. It is a flat 120-minute cap per page load, full
+stop; this was confirmed live (all 5 tabs found on `login.html`, and the server itself confirmed
+`CLIENT_HAVE_BEEN_LOGGED_OUT` when pinged directly).
+
+The only available countermeasure is what `refresh_interval_seconds` already does: a periodic
+`Page.reload()` re-executes the page's JS from scratch, re-arming a fresh 120-minute window
+before the old one expires. **This must stay enabled** (a positive value comfortably under 120
+minutes) for this specific site/account, or every tab will hard-log-out on a fixed schedule no
+matter what keep-alive does. `keep_alive_interval_seconds` and `refresh_interval_seconds` fix two
+different, unrelated failure modes — disabling either one reintroduces its half of the problem.
 
 `keep_alive` only protects the server-side *session* (the cookie). It doesn't protect what's
 *on screen*: this app's live dashboard data comes from `PropertySubscription`/`ReadSubscription`
@@ -446,3 +483,45 @@ for name in ("tab_0", "tab_1", "tab_2", "tab_3", "tab_4"):
 See `scripts/run_cdp_webstation_demo.py` for a runnable end-to-end demo against a real
 login-gated site, including both the keep-alive loop and per-tab auto-refresh
 (`--refresh-interval-seconds`, default 300; pass `0` to disable).
+
+### Per-tab operation locking
+
+`keep_alive`, `refresh`, `login`, `navigate`, `screenshot`, and `navigate_equipment` each open
+their own independent `DevToolsWebSocket` connection to a tab, and up to three of them can be
+triggered by entirely different background threads at once for the same tab: `keep_alive` on its
+own loop (`keep_alive_interval_seconds`), `refresh` on its own, unrelated loop
+(`refresh_interval_seconds`), and a capture request arriving at any time. Observed live: a
+scheduled `Page.reload()` (refresh) landing while a `keep_alive` ping or `login()`
+fill/submit sequence was mid-flight tore down the page's JS execution context out from under it —
+the tab then wedged permanently, every subsequent `login()` call timing out on "login page did
+not become ready," starting within ~10s of that tab's first scheduled refresh and never
+recovering on its own (confirmed: `refresh_interval_seconds: 3600`, wedge onset lined up with the
+1-hour mark almost exactly). `CdpMultiTabService` now holds one `threading.Lock` per tab name
+(`_lock_for(name)`) and every one of those six methods acquires it before touching the tab, so at
+most one CDP operation touches a given tab's page/JS state at a time. Locks are per tab, not
+global — operations on different tabs (e.g. two different `team_id`s' own pinned tabs) still run
+fully in parallel; only same-tab operations now queue instead of racing.
+
+## Equipment navigation
+
+`equipment_navigation.navigate_to_equipment_graphic(client, path, pane_height="12%",
+settle_seconds=3.0, timeout_seconds=35)` routes an already-`Runtime.enable`'d tab to one
+equipment's graphic page via the SPA's own hash routing (`window.location.hash = path`), waits
+for it to actually render (polls `document.querySelectorAll('svg').length > 0`), then collapses
+the bottom alarm-list pane (`.layout-pane.layout-pane-primary`) so the equipment graphic/data
+tables get full height — raises `RuntimeError` if no svg content ever appears. This is the exact
+sequence `scripts/screenshot_equipment_list.py` already uses to batch-capture equipment offline
+against a throwaway Chrome process; it's factored out here so it can also run against an
+already-open, already-logged-in shared tab.
+
+`CdpMultiTabService.navigate_equipment(name, path, pane_height="12%", settle_seconds=3.0,
+timeout_seconds=35)` wraps that for one named tab (opens its own `DevToolsWebSocket`, same
+pattern as `screenshot()`/`login()`). `BrowserScreenshotService.capture(..., equipment_path=...)`
+calls it right before the screenshot when `equipment_path` is given — the channel's tab is left
+showing that equipment afterward, same as how re-sending a photo re-captures whatever a tab
+currently displays.
+
+This is what backs the WeChat select-equipment guided flow (category -> equipment -> confirm ->
+capture) described in `workflow/README.md` → "Select-equipment flow"; `path` there comes from the
+equipment CSV's `path` column (`workflow.equipment_catalog`), the same file
+`scripts/screenshot_equipment_list.py` reads.

@@ -13,85 +13,118 @@
         "name": "webstation-test",
         "start_url": "https://10.121.0.14/login.html",
         "app_url": "https://10.121.0.14/",
-        "tab_count": 5,
+        "tab_count": 8,
         "tab": 0,
         "login": {
           "enabled": true,
           "username_env": "WEBSTATION_USERNAME",
           "password_env": "WEBSTATION_PASSWORD",
           "keep_alive_interval_seconds": 60,
-          "refresh_interval_seconds": 300
+          "refresh_interval_seconds": 3600
         }
       },
       "2": {
         "name": "webstation-test",
         "start_url": "https://10.121.0.14/login.html",
         "app_url": "https://10.121.0.14/",
-        "tab_count": 5,
+        "tab_count": 8,
         "tab": 1,
         "login": {
           "enabled": true,
           "username_env": "WEBSTATION_USERNAME",
           "password_env": "WEBSTATION_PASSWORD",
           "keep_alive_interval_seconds": 60,
-          "refresh_interval_seconds": 300
+          "refresh_interval_seconds": 3600
         }
       },
       "3": {
         "name": "webstation-test",
         "start_url": "https://10.121.0.14/login.html",
         "app_url": "https://10.121.0.14/",
-        "tab_count": 5,
+        "tab_count": 8,
         "tab": 2,
         "login": {
           "enabled": true,
           "username_env": "WEBSTATION_USERNAME",
           "password_env": "WEBSTATION_PASSWORD",
           "keep_alive_interval_seconds": 60,
-          "refresh_interval_seconds": 300
+          "refresh_interval_seconds": 3600
         }
       },
       "4": {
         "name": "webstation-test",
         "start_url": "https://10.121.0.14/login.html",
         "app_url": "https://10.121.0.14/",
-        "tab_count": 5,
+        "tab_count": 8,
         "tab": 3,
         "login": {
           "enabled": true,
           "username_env": "WEBSTATION_USERNAME",
           "password_env": "WEBSTATION_PASSWORD",
           "keep_alive_interval_seconds": 60,
-          "refresh_interval_seconds": 300
+          "refresh_interval_seconds": 3600
         }
       },
       "5": {
         "name": "webstation-test",
         "start_url": "https://10.121.0.14/login.html",
         "app_url": "https://10.121.0.14/",
-        "tab_count": 5,
+        "tab_count": 8,
         "tab": 4,
         "login": {
           "enabled": true,
           "username_env": "WEBSTATION_USERNAME",
           "password_env": "WEBSTATION_PASSWORD",
           "keep_alive_interval_seconds": 60,
-          "refresh_interval_seconds": 300
+          "refresh_interval_seconds": 3600
+        }
+      },
+      "6": {
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 8,
+        "tab": 5,
+        "backup": true,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 3600
+        }
+      },
+      "7": {
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 8,
+        "tab": 6,
+        "backup": true,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 3600
+        }
+      },
+      "8": {
+        "name": "webstation-test",
+        "start_url": "https://10.121.0.14/login.html",
+        "app_url": "https://10.121.0.14/",
+        "tab_count": 8,
+        "tab": 7,
+        "backup": true,
+        "login": {
+          "enabled": true,
+          "username_env": "WEBSTATION_USERNAME",
+          "password_env": "WEBSTATION_PASSWORD",
+          "keep_alive_interval_seconds": 60,
+          "refresh_interval_seconds": 3600
         }
       }
     }
-  },
-  "virtual_desktop": {
-    "enabled": false,
-    "min_desktop": 1,
-    "max_desktop": 4,
-    "initial_desktop": 1,
-    "state_path": "runtime\\virtual-desktop-state.json",
-    "lock_path": "runtime\\virtual-desktop.lock",
-    "lock_timeout_seconds": 30,
-    "switch_key_delay_ms": 180,
-    "settle_delay_ms": 700,
-    "trigger_pattern": "^\\\\s*(\\\\d{1,2})\\\\s*$"
   },
   "watermark": {
     "enabled": true,
@@ -121,6 +154,14 @@
     "margin_bottom": 70,
     "line_spacing": 8
   },
+  "equipment_catalog": {
+    "enabled": false,
+    "csv_path": "runtime/cdp-explore-out/hvac_equipment.csv",
+    "pane_height": "12%",
+    "settle_seconds": 3.0,
+    "navigate_timeout_seconds": 35,
+    "selection_tracker_path": "runtime/equipment-selection-tracker.json"
+  },
   "wechat_official_webhook": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -131,10 +172,11 @@
     "appsecret_env": "WECHAT_APPSECRET",
     "screenshot_dir": "screenshots",
     "incoming_image_dir": "storage\\incoming",
+    "private_channel": {
+      "save_dir": "storage\\private"
+    },
     "log_path": "logs\\wechat-official-webhook-events.jsonl",
     "dedupe_ttl_seconds": 600,
-    "screenshot_tool": "ScreenshotTool.exe",
-    "capture_message_types": "none",
     "capture_timeout_seconds": 15,
     "ignore_message_types": "image"
   }

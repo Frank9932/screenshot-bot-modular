@@ -1,4 +1,263 @@
-# Debug Handoff — tab-not-debuggable / orphan-process incident
+# Debug Handoff
+
+## Status as of 2026-07-20 (read this section first — supersedes 2026-07-17 below)
+
+This update comes from a project-recovery pass over repo state only (git status/log,
+code, docs) — not from a live debugging session, so it records *what exists*, not
+*why* or *whether it's been tested/deployed*. Those are marked Unknown below rather
+than guessed. See `docs/PROJECT_SNAPSHOT.md` for the full recovery writeup.
+
+**The 2026-07-17 section below is now stale**: the working tree contains a further
+wave of uncommitted, untracked work it does not mention at all —
+
+- `src/screenshot_bot/workflow/menu.py` (untracked) — builds the WeChat custom
+  tap-menu payload and translates a menu tap's `EventKey` back into the equivalent
+  typed command text. Documented in `workflow/README.md` → "Tap menu".
+- `src/screenshot_bot/wechat/menu_manager.py` (untracked) — `WeChatMenuManager`,
+  pushes/reads the menu via `cgi-bin/menu/create`/`cgi-bin/menu/get`. Documented in
+  `wechat/README.md`.
+- `scripts/run_wechat_menu_sync.py` (untracked) — the `Bot.ps1 menu set`/`menu get`
+  entrypoint.
+- `src/screenshot_bot/workflow/equipment_catalog.py`,
+  `equipment_prompts.py`, `equipment_selection_tracker.py` (all untracked) — a guided
+  select-equipment flow (category → equipment → confirm → capture) gated behind
+  `equipment_catalog.enabled` (default `false`). Documented in `workflow/README.md` →
+  "Select-equipment flow" and `browser/README.md` → "Equipment navigation".
+- `src/screenshot_bot/browser/equipment_navigation.py` (untracked) — the CDP-level
+  hash-route navigation + pane-collapse this flow uses to show one equipment's own
+  graphic before capturing.
+- `scripts/screenshot_equipment_list.py`, `scripts/crawl_graphics_tree.py` (untracked)
+  — offline tooling around the same equipment CSV (`category,equipment,path` columns)
+  the select-equipment flow reads at `equipment_catalog.csv_path`.
+
+**Unknown** (not recoverable from repo state alone — ask whoever did this work, or
+check external session history if available): when this was built relative to
+2026-07-17, whether it has been verified against a live WeChat account or only via
+the module READMEs' manual test snippets, and whether it has been deployed to any of
+bot-1/2/3.
+
+**Current full uncommitted diff** (`git status`, superseding the list under
+"Uncommitted changes (local, not yet committed on top of PR #4)" below, which is
+missing everything listed above plus a few others):
+```
+M  README.md
+M  ansible/README.md
+M  ansible/deploy.yml
+M  config.example.json
+M  docs/DEBUG_HANDOFF.md
+M  scripts/Bot.ps1
+M  scripts/Start-WebhookBackground.ps1
+M  scripts/Stop-WebhookBackground.ps1
+M  src/screenshot_bot/browser/README.md
+M  src/screenshot_bot/browser/cdp_multi_tab_service.py
+M  src/screenshot_bot/browser/profile_manager.py
+M  src/screenshot_bot/browser/screenshot_service.py
+M  src/screenshot_bot/wechat/README.md
+M  src/screenshot_bot/wechat/official_api.py
+M  src/screenshot_bot/wechat/webhook_server.py
+M  src/screenshot_bot/workflow/README.md
+M  src/screenshot_bot/workflow/help_text.py
+M  src/screenshot_bot/workflow/wechat_image_reply.py
+?? ansible/tasks/tunnel.yml
+?? config.json                                    <- local-only, intentionally never committed
+?? device-agent-mvp/                               <- unrelated prototype, see PROJECT_SNAPSHOT.md
+?? scripts/Watch-WebhookLog.ps1
+?? scripts/crawl_graphics_tree.py
+?? scripts/run_wechat_menu_sync.py
+?? scripts/screenshot_equipment_list.py
+?? src/screenshot_bot/browser/equipment_navigation.py
+?? src/screenshot_bot/wechat/menu_manager.py
+?? src/screenshot_bot/workflow/equipment_catalog.py
+?? src/screenshot_bot/workflow/equipment_prompts.py
+?? src/screenshot_bot/workflow/equipment_selection_tracker.py
+?? src/screenshot_bot/workflow/menu.py
+?? src/screenshot_bot/workflow/message_router.py
+```
+Per the same standing working agreement noted below: only commit/push when the user
+explicitly asks.
+
+**Also flagged during this recovery pass** (see `docs/PROJECT_SNAPSHOT.md` for
+detail, not repeated here): `screenshot_store/README.md` had a stale key-format
+example (now fixed); no automated test suite exists anywhere in this repo;
+`device-agent-mvp/.env` appears to contain a live API key in plain text.
+
+---
+
+## Status as of 2026-07-17
+
+**Branch**: `feature/user-scoped-storage-and-channels`, PR
+[#4](https://github.com/Frank9932/screenshot-bot-modular/pull/4) open against `master`
+(not merged). Local working tree has further uncommitted changes on top of that PR —
+see "Uncommitted changes" below.
+
+### What this branch adds, on top of the channel/watermark work in PR history
+- **Storage reordered** to `{user_id}/channel_{id}/{original,watermarked}` (was
+  `channel_{id}/{user_id}`) for both outgoing screenshots and incoming photos — a
+  sender's own folder is now the top-level grouping, channel nested inside it.
+- **`virtual_desktop`/desktop-screenshot capability removed entirely** (dead code path
+  in practice — `capture_message_types` was always `"none"`, `virtual_desktop.enabled`
+  always `false`). Capture dispatch is now just: channel digit/photo → browser capture,
+  or a plain-language guidance reply for everything else.
+- **Channel count is config-driven**, not hardcoded to 5. `browser_targets.targets` can
+  hold any number of channels; the example config ships 5 regular + 3 "backup" channels
+  (`"backup": true`) that work identically but are omitted from `帮助`/guidance text.
+- **Private channel is now passcode-gated**: `私密`/`private` does nothing until a
+  sender first sends the exact text `11223344` (`help_text.PRIVATE_CHANNEL_PASSCODE`),
+  which unlocks it for them persistently (`UserTeamTracker.unlock_private`). The
+  post-unlock confirmation text was later trimmed to not restate the trigger words.
+- **First-join notice**: the first time a sender ever joins any channel, a follow-up
+  text tells them their images are archived per-user.
+- **Interaction layer decoupled**: new pure module
+  [message_router.py](../src/screenshot_bot/workflow/message_router.py) —
+  `route_message(...)` takes a message + the sender's already-looked-up state and
+  returns a decision dict (`join_channel`, `recapture`, `guidance`, etc.) with zero I/O.
+  `wechat_image_reply.py`'s `WeChatImageReplyWorkflow` is now a thin executor of those
+  decisions. Runnable standalone for debugging: `python -m screenshot_bot.workflow.message_router`.
+- **WeChat API per-call timing** (`token_ms`/`upload_ms`/`send_ms`) added to the JSONL
+  event log — this is what originally diagnosed a slow-reply investigation on `win11-bot-02`
+  (root cause turned out to be Hyper-V LSO on that VM's virtual NIC, since fixed).
+- **`webhook_server.py`: `allow_reuse_address = False`** — the real fix for a
+  recurring split-brain bug (see "Split-brain / duplicate webhook process" below,
+  which connects to the *old* incident documented further down this file under
+  "Incident 2/3").
+- **Tunnel management overhauled**:
+  - `Bot.ps1 tunnel permanent-install -TunnelToken <token>` installs cloudflared as a
+    Windows service bound to a named Cloudflare Tunnel (stable hostname, survives
+    reboots) — as opposed to the old throwaway quick tunnel.
+  - Wired into `deploy.yml` by default via `ansible/tasks/tunnel.yml`: runs
+    automatically whenever `bot_tunnel_token` is set for a host (host var in
+    `inventory.yml`, gitignored/real file — bot-3's token is already there).
+  - **`Bot.ps1 all kill`/`all restart` no longer touch any tunnel at all** (quick or
+    permanent) — tunnel is managed independently as infrastructure now.
+  - `Bot.ps1 status` shows both the permanent-tunnel service status and the quick-tunnel
+    state separately (previously it only checked the quick-tunnel state file, which
+    always read "not running" once a host switched to the permanent service).
+- **New log watcher**: [scripts/Watch-WebhookLog.ps1](../scripts/Watch-WebhookLog.ps1) —
+  colorized, one-line-per-event live tail of the JSONL log with safe/defensive JSON
+  parsing and forced UTF-8 console output (fixes a real mojibake/`??` bug in how
+  `Get-Content` reads the log without `-Encoding UTF8`, also fixed in the pre-existing
+  `Invoke-WebhookLogs`). Launch via `Bot.ps1 webhook watch` — opens fully detached in
+  its own new console window (`Start-Process`, no `-Wait`), parent returns in under 2s.
+
+### Deployment state across hosts (as of this session)
+- **`win11-bot-01`**: **production, user manages manually.** Do not deploy, restart,
+  or touch its running process without being explicitly asked again — this instruction
+  was given explicitly mid-session and still stands.
+- **`win11-bot-02`**: not touched recently in this session; last known state was
+  healthy after the LSO/ARP fixes from an earlier part of this session (see
+  conversation history, not repeated here). Status not re-verified as of this handoff.
+- **`win11-bot-03`**: this branch's code is deployed (`deploy.yml --skip-tags secrets`,
+  secrets intentionally left alone since bot-3 already has its own working WeChat
+  credentials distinct from bot-1/bot-2's). Permanent tunnel installed and verified
+  reachable at `https://wechat-screenshot-1.hankarobotic.com/wechat/official/webhook`
+  (a plain curl gets `403 invalid signature`, which is the *correct* healthy response —
+  it means the request reached the webhook's own signature check). **Webhook/Chrome are
+  currently NOT running on bot-3** — the user explicitly said "let me start the bot
+  myself" after repeated failed remote-start attempts (see next section) and asked me
+  to stop trying. Do not attempt to remotely start/restart the webhook on bot-3 unless
+  asked again.
+
+### Split-brain / duplicate webhook process — recurred this session, root cause still incomplete
+This is the same *symptom* as the historical incident documented below (two processes
+matching `run_wechat_official_webhook.py`, one via `.venv\Scripts\python.exe` and one via
+a bare system `python.exe` under a different user profile, both bound to port 8791 at the
+exact same creation timestamp), but it recurred on **both bot-1 and bot-3** during this
+session through a *different* trigger than the original incident:
+
+- On bot-1, the trigger was found and fixed: a **leftover scheduled task**
+  (`ScreenshotBotModular-Webhook`, pointing at a legacy launcher script under
+  `logs\run-webhook.ps1`, using a different Python interpreter) — created by an earlier
+  deployment before `create_startup_task: false` became the default. Removed via
+  `Unregister-ScheduledTask`; confirmed gone; a subsequent clean start showed no
+  split-brain.
+- On bot-3, the **same symptom reproduced multiple times even from a verified clean
+  process-zero state**, and an exhaustive search found **no scheduled task, no Windows
+  service, no startup-folder item, no WMI event subscription** responsible. It happened
+  whether the `ansible-playbook bot.yml -e bot_command=webhook -e bot_action=start` call
+  was run in the foreground, backgrounded via the harness, or even when the whole
+  `Bot.ps1 webhook start` invocation was wrapped in its own detached `Start-Process` (which
+  eliminated the split-brain but caused a *different* problem: the webhook died entirely
+  once the WinRM session closed, because the extra process-nesting broke the detachment
+  that normally lets `Start-WebhookBackground.ps1`'s child survive past the ansible task).
+  **Working theory** (not confirmed): a WinRM/ansible transport-level double-execution of
+  the long-blocking `win_shell` task against bot-3's Tailscale connection (independently
+  observed to be flaky to this host throughout the session — repeated `tailscale status`
+  "logged out"/coordination-server-unreachable events). This is *not* fixed at the code
+  level — `allow_reuse_address = False` (see above) makes a genuine double-launch fail
+  loudly instead of silently coexisting, which is a real improvement, but doesn't explain
+  or prevent the double-launch itself. **Given this, and the user's explicit instruction
+  to stop attempting remote starts on bot-3, this remains an open, unresolved
+  infrastructure question** — if it recurs when the user starts it manually (not via
+  ansible), that would be strong evidence the trigger is ansible/WinRM-specific, not a
+  bug in `Start-WebhookBackground.ps1` itself.
+
+### Unresolved: local test instance on this dev machine
+Last action before this handoff was updated: attempted to start a local test instance
+(`scripts/Start-WebhookOnly.ps1 -ConfigPath config.example.json -Port 8792`, launched
+detached via `Start-Process`, intended to be paired with a quick tunnel redirected to
+port 8792) to test against the existing tunnel tooling. A health check against
+`http://127.0.0.1:8792/health` immediately after failed with "Unable to connect to the
+remote server" — i.e. the process did not come up (or came up and exited) within the
+few seconds waited. **Not yet diagnosed** — the investigation was interrupted before
+checking the spawned window/process for an error. Local `config.json` has
+`browser_targets.enabled: false` (no Chrome/browser testing intended for this local
+run, just the WeChat message-handling/tunnel path), and `secrets.local.ps1` exists
+locally with real credentials sourced by `Start-WebhookOnly.ps1`. Next step for whoever
+picks this up: re-run `Start-WebhookOnly.ps1 -Port 8792` directly in a foreground
+console (not detached) to see its actual startup error output, since the detached
+window's output was never captured/inspected.
+
+### Known gotchas hit again this session (still apply)
+- **Apostrophes in `win_shell` comments break Ansible's free-form argument parsing** —
+  hit repeatedly across this whole project's history; reword to avoid apostrophes.
+- **PowerShell `2>&1` on a native executable's stderr, combined with
+  `$ErrorActionPreference = "Stop"`, turns routine stderr chatter into a terminating
+  error** — hit with `cloudflared.exe`'s own INFO-level log lines during
+  `tunnel permanent-install`, which logs to stderr as a matter of course, not as an
+  error signal. Fixed by locally scoping `$ErrorActionPreference = "Continue"` around
+  just those two calls in `Invoke-TunnelPermanentInstall` (see `scripts/Bot.ps1`).
+- **`Get-Content` without `-Encoding UTF8` misreads this project's UTF-8 log files on
+  Windows PowerShell 5.1**, producing mojibake or `??` for Chinese content depending on
+  the system's console codepage — fixed in `Invoke-WebhookLogs` and
+  `Watch-WebhookLog.ps1`; also needed `[Console]::OutputEncoding = UTF8` explicitly for
+  correct *display*, since the encoding and console-output problems are separate issues
+  that both need fixing (confirmed via `Start-Job`/`Receive-Job` testing being an
+  unreliable way to verify console encoding — it adds its own serialization layer; use
+  `Start-Process -RedirectStandardOutput` for a faithful test instead).
+
+### Uncommitted changes (local, not yet committed on top of PR #4)
+```
+M  ansible/README.md
+M  ansible/deploy.yml
+M  scripts/Bot.ps1
+M  src/screenshot_bot/workflow/README.md
+M  src/screenshot_bot/workflow/help_text.py
+M  src/screenshot_bot/workflow/wechat_image_reply.py
+?? ansible/tasks/tunnel.yml
+?? config.json                                    <- local-only, intentionally never committed
+?? scripts/Watch-WebhookLog.ps1
+?? src/screenshot_bot/workflow/message_router.py
+```
+Per this project's standing working agreement: only commit/push when the user
+explicitly asks, even though bot-3 already has all of this deployed.
+
+### Suggested next steps for whoever picks this up
+1. Diagnose the local test-instance failure (port 8792) — rerun
+   `Start-WebhookOnly.ps1` in the foreground to see the actual error.
+2. Once local testing works, the original ask was: start a quick tunnel
+   (`Start-PublicTunnel.ps1 -Port 8792`) redirected at the local instance, to test the
+   webhook end-to-end without needing a remote host.
+3. If/when the user wants bot-3's webhook started, that is explicitly theirs to do —
+   do not attempt it via ansible again without being asked, given the unresolved
+   split-brain question above.
+4. Ask the user whether to commit the currently-uncommitted changes listed above
+   (do not do this proactively).
+5. Bot-2's status hasn't been re-checked in a while — worth a status pass if it comes
+   up again.
+
+---
+
+# Historical: tab-not-debuggable / orphan-process incident (2026-07-05, resolved)
 
 Status as of 2026-07-05 (updated, ~03:59 UTC): **the ansible-restart fix from earlier
 today is verified correct for its own trigger path, but a THIRD incident was found live

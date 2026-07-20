@@ -78,7 +78,7 @@ $serverErr = Join-Path $runtimeDir "wechat-official-webhook-server.err.log"
 # isn't running yet, I'll launch it"). Stop-WebhookBackground.ps1 kills every process actually
 # running this webhook's entry script, not just the one this state file happens to remember, so
 # reuse it here instead of only stopping the last known PID.
-& (Join-Path $PSScriptRoot "Stop-WebhookBackground.ps1") -StatePath $statePath
+& (Join-Path $PSScriptRoot "Stop-WebhookBackground.ps1") -StatePath $statePath -Port $port
 Remove-Item -LiteralPath $readyFile, $serverOut, $serverErr -Force -ErrorAction SilentlyContinue
 
 $python = Get-PythonPath

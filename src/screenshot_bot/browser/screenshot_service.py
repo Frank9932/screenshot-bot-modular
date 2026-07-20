@@ -77,7 +77,18 @@ class BrowserScreenshotService:
                 results[team_id] = entry
         return results
 
-    def capture(self, team_id, tab=None, user_id=None, output_dir=None, image_name=None, timeout_seconds=15):
+    def capture(
+        self,
+        team_id,
+        tab=None,
+        user_id=None,
+        output_dir=None,
+        image_name=None,
+        timeout_seconds=15,
+        equipment_path=None,
+        equipment_pane_height="12%",
+        equipment_settle_seconds=3.0,
+    ):
         target = self.targets.get_target(team_id)
         # A team_id's own config declares which tab it means (several team_ids can share one
         # underlying multi-tab target, e.g. team 1-5 each pinned to one of the same site's 5
@@ -93,6 +104,15 @@ class BrowserScreenshotService:
         final_path = output_dir / image_name
 
         tab_name, startup_info = self.profile_manager.ensure_tab(team_id, target, tab_index=tab)
+        if equipment_path:
+            # Reroutes this channel's own tab to one equipment's graphic via the SPA's hash
+            # routing before screenshotting it -- the tab stays on this equipment afterward, so
+            # a plain (non-equipment) capture of the same channel right after would also show it,
+            # same as how re-sending a photo re-captures whatever the tab currently displays.
+            self.profile_manager.service.navigate_equipment(
+                tab_name, equipment_path, pane_height=equipment_pane_height,
+                settle_seconds=equipment_settle_seconds, timeout_seconds=timeout_seconds,
+            )
         capture_result = self.profile_manager.service.screenshot(
             tab_name, output_path=raw_path, timeout_seconds=timeout_seconds
         )
@@ -100,11 +120,14 @@ class BrowserScreenshotService:
         page = next((t for t in self.profile_manager.service.list_tabs() if t["name"] == tab_name), {})
 
         target_name = str(target.get("name", team_id))
-        # Two sub-folders per channel -- "original" (pre-watermark bytes, archived here) and
-        # "watermarked" (the exact bytes sent to WeChat, archived below once rendered) -- so
-        # either version can be recovered later without re-deriving one from the other.
+        # {user_id}/channel_{id}/{original,watermarked} -- everything for one sender lives
+        # under their own top-level folder, with channel as a subfolder inside it, matching the
+        # same {user_id}/channel_{id} layout incoming photos use (see wechat_image_reply.py's
+        # _store_incoming_image). Falls back to "unknown" for callers that don't pass a user_id
+        # (e.g. audit/demo scripts), so a capture never gets filed with an empty path segment.
+        store_user_key = user_id or "unknown"
         store_record = self.store.save_screenshot(
-            f"channel_{team_id}/original", capture_result["bytes"], duration_ms=round(capture_ms)
+            f"{store_user_key}/channel_{team_id}/original", capture_result["bytes"], duration_ms=round(capture_ms)
         )
 
         watermark_started = time.perf_counter()
@@ -129,7 +152,7 @@ class BrowserScreenshotService:
         watermark_info = watermark.apply(raw_path, final_path, dynamic)
         watermark_ms = (time.perf_counter() - watermark_started) * 1000.0
         watermarked_store_record = self.store.save_screenshot(
-            f"channel_{team_id}/watermarked", final_path.read_bytes(), duration_ms=round(capture_ms)
+            f"{store_user_key}/channel_{team_id}/watermarked", final_path.read_bytes(), duration_ms=round(capture_ms)
         )
         return {
             "source": "chrome_devtools",
@@ -137,6 +160,7 @@ class BrowserScreenshotService:
             "target_name": target_name,
             "tab": tab,
             "user_id": user_id or "",
+            "equipment_path": equipment_path or "",
             "debug_port": self.profile_manager.port,
             "browser_startup": startup_info,
             "page_title": page.get("title", ""),

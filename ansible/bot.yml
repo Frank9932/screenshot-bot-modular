@@ -3,6 +3,8 @@
 #   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=status"
 #   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=browser bot_action=restart"
 #   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=webhook bot_action=logs bot_tail=200"
+#   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=all bot_action=restart"
+#   ansible-playbook -i inventory.yml bot.yml --limit <host> -e "bot_command=tunnel bot_action=permanent-install bot_tunnel_token=eyJhIjoi..."
 - name: Run a Screenshot Bot Modular CLI command
   hosts: screenshot_bot_modular
   gather_facts: false
@@ -10,6 +12,7 @@
   vars:
     bot_action: ""
     bot_tail: 80
+    bot_tunnel_token: ""
 
   tasks:
     - name: Validate bot_command was provided
@@ -18,12 +21,12 @@
           - bot_command is defined
           - bot_command | length > 0
         fail_msg: >-
-          Pass -e "bot_command=<status|webhook|browser|tunnel>" (and bot_action=<...> where
+          Pass -e "bot_command=<status|webhook|browser|tunnel|all>" (and bot_action=<...> where
           applicable, e.g. bot_action=restart).
 
     - name: Run Bot.ps1
       ansible.windows.win_shell: |
-        powershell.exe -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Bot.ps1" {{ bot_command }} {{ bot_action }} -ConfigPath "{{ bot_install_dir }}\config.json" -Tail {{ bot_tail }}
+        powershell.exe -ExecutionPolicy Bypass -File "{{ bot_install_dir }}\scripts\Bot.ps1" {{ bot_command }} {{ bot_action }} -ConfigPath "{{ bot_install_dir }}\config.json" -Tail {{ bot_tail }}{{ ' -TunnelToken ' + bot_tunnel_token if bot_tunnel_token | length > 0 else '' }}
       register: bot_result
       changed_when: true
 

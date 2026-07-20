@@ -1,0 +1,53 @@
+{
+  "_comment": "Config for scripts/demo_mvp.py only (see docs/MVP_DEMO.md). Not used by the live webhook. All paths point under runtime/mvp-demo/ (gitignored) so demo runs never touch real runtime/storage state. equipment_catalog.enabled is true here (unlike config.example.json's production default of false) so the select-equipment flow is reachable in the demo.",
+  "browser_targets": {
+    "enabled": false,
+    "targets": {}
+  },
+  "watermark": {
+    "enabled": true,
+    "fields": [],
+    "lines": [],
+    "include_timestamp": true,
+    "timestamp_label": "Capture Time",
+    "label_separator": ": ",
+    "timestamp_prefix": "Time: ",
+    "timestamp_format": "yyyy.MM.dd HH:mm",
+    "font_family": "Microsoft YaHei",
+    "font_size": 36,
+    "text_color": "#FFFFFF",
+    "background_color": "#000000",
+    "background_opacity": 100,
+    "padding": 18,
+    "margin_left": 70,
+    "margin_bottom": 70,
+    "line_spacing": 8
+  },
+  "equipment_catalog": {
+    "enabled": true,
+    "csv_path": "runtime/cdp-explore-out/hvac_equipment.csv",
+    "pane_height": "12%",
+    "settle_seconds": 3.0,
+    "navigate_timeout_seconds": 35,
+    "selection_tracker_path": "runtime/mvp-demo/equipment-selection-tracker.json"
+  },
+  "wechat_official_webhook": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8790,
+    "path": "/wechat/official/webhook",
+    "token_env": "WECHAT_OFFICIAL_WEBHOOK_TOKEN",
+    "appid_env": "WECHAT_APPID",
+    "appsecret_env": "WECHAT_APPSECRET",
+    "screenshot_dir": "runtime/mvp-demo/screenshots",
+    "incoming_image_dir": "runtime/mvp-demo/incoming",
+    "user_team_tracker_path": "runtime/mvp-demo/user-team-tracker.json",
+    "private_channel": {
+      "save_dir": "runtime/mvp-demo/private"
+    },
+    "log_path": "runtime/mvp-demo/webhook-events.jsonl",
+    "dedupe_ttl_seconds": 600,
+    "capture_timeout_seconds": 15,
+    "ignore_message_types": "image"
+  }
+}

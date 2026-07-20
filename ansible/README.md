@@ -91,17 +91,20 @@ and remotely through the `ansible/bot.yml` wrapper:
 
 ```powershell
 # on the machine directly
-scripts\Bot.ps1 status              # webhook + tunnel + Chrome process count, one view
+scripts\Bot.ps1 status              # webhook, permanent + quick tunnel, Chrome process count
 scripts\Bot.ps1 webhook restart      # clean stop + start + print browser warm_up
 scripts\Bot.ps1 browser restart      # kill Chrome too, then restart the webhook (fresh Chrome + re-login)
 scripts\Bot.ps1 browser warmup       # retry login for every target WITHOUT restarting anything
 scripts\Bot.ps1 tunnel start
+scripts\Bot.ps1 all kill             # stop webhook + kill Chrome, nothing left running
+scripts\Bot.ps1 all restart          # kill everything above, then start webhook fresh
 ```
 
 ```bash
 # remotely, via ansible
 ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=status"
 ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=browser bot_action=restart"
+ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=all bot_action=restart"
 ```
 
 `webhook restart` (Python process only) intentionally does **not** kill Chrome — a process
@@ -110,7 +113,12 @@ an authenticated session. If Chrome itself is the thing that's stuck (not just t
 process), use `browser restart` instead, which kills Chrome first. `browser warmup` is the
 non-disruptive option: it retries login for every target in a one-off process that safely
 shares the already-running Chrome (via `adopt_tab`), without touching the live webhook process
-at all — useful right after fixing a credential.
+at all — useful right after fixing a credential. `all kill`/`all restart` go one step further
+than `browser restart` for when the whole webhook+Chrome stack needs a clean slate — each
+underlying stop step already tolerates "nothing running", so `all kill` is safe to run any time,
+not just as a recovery step. **None of these touch the tunnel, quick or permanent** — the tunnel
+is managed independently as infrastructure (see below), since a bot restart has no reason to
+cycle ingress; use `tunnel start`/`tunnel stop`/`tunnel permanent-install` explicitly for that.
 
 The commands below are the individual playbooks `Bot.ps1`/`bot.yml` wrap; use them directly if
 you want one specific step rather than the combined command:
@@ -155,6 +163,39 @@ If the host already has a named Cloudflare tunnel configured (a `config.yml` und
 isolates itself from it by overriding `USERPROFILE` for just that process — otherwise cloudflared
 picks up that config's credentials and evaluates every request against *that* tunnel's ingress
 rules, which don't know about our new quick-tunnel hostname and 404 everything.
+
+### Permanent tunnel
+
+This is the intended production setup: cloudflared installed as a Windows service bound to a
+named Cloudflare Tunnel (token from Zero Trust → Networks → Tunnels → your tunnel → install
+command). Unlike the quick tunnel above, it survives reboots and keeps a stable hostname, because
+the routing (which public hostname maps to `http://127.0.0.1:<port>`) lives in the Cloudflare
+Zero Trust dashboard, not in a local config file or the bot's own process lifecycle — it is
+infrastructure, set up once, independent of the webhook/Chrome restart cycle.
+
+**Installed automatically at deploy time** (`ansible/tasks/tunnel.yml`, wired into `deploy.yml`)
+whenever `bot_tunnel_token` is set for a host — as a host var in `inventory.yml`/`host_vars/`
+(the normal way, so a plain `deploy.yml` run always keeps that host's tunnel installed/up to
+date), or passed ad hoc via `-e`:
+
+```bash
+ansible-playbook -i ansible/inventory.yml ansible/deploy.yml --limit <host> -e "bot_tunnel_token=eyJhIjoi..."
+```
+
+Hosts with no `bot_tunnel_token` configured just skip this step — nothing forces every host onto
+a permanent tunnel. To install/replace it independently of a full deploy (e.g. switching a host
+to a different tunnel without re-syncing code):
+
+```bash
+ansible-playbook -i ansible/inventory.yml ansible/tunnel-permanent-install.yml --limit <host> -e "bot_tunnel_token=eyJhIjoi..."
+# or, via the generic wrapper:
+ansible-playbook -i ansible/inventory.yml ansible/bot.yml --limit <host> -e "bot_command=tunnel bot_action=permanent-install bot_tunnel_token=eyJhIjoi..."
+```
+
+Add or change the Public Hostname route for that tunnel in the Zero Trust dashboard, matching the
+webhook's actual port. Re-running with a different token replaces whatever tunnel was previously
+installed on that host (uninstall-then-install), so it's safe to call again to switch a host to a
+different tunnel.
 
 ## Notes
 

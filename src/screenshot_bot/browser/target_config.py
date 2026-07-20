@@ -16,6 +16,13 @@ class BrowserTargetConfig:
         targets = self.section.get("targets") or {}
         return targets if isinstance(targets, dict) else {}
 
+    @property
+    def visible_targets(self):
+        """Targets to advertise in help/guidance text -- excludes channels marked "backup":
+        true, which still work if a sender happens to type their digit, they're just not
+        mentioned so an ordinary user never stumbles onto them."""
+        return {tid: t for tid, t in self.targets.items() if not t.get("backup")}
+
     def parse_number(self, text):
         if not self.enabled:
             return None
